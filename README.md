@@ -116,8 +116,14 @@ demo/
 │     ├─ history/             # ConversationList / ConversationItem
 │     └─ common/              # Modal / ConfirmDialog / Button / icons
 ├─ src/prompts/               # ⏳ 阶段 8 创建（teacher.ts / student.ts / index.ts）
-├─ src/services/ · src/db/    # ⏳ 阶段 3 / 7 / 9 创建
-├─ worker/                    # ⏳ 阶段 4 创建（独立 package.json + wrangler.toml）
+├─ src/services/ · src/db/    # storage ✅ ／ chatApi、IndexedDB ⏳ 阶段 7 / 9
+├─ worker/                    # ✅ 阶段 4：Cloudflare Worker（独立 package.json）
+│  ├─ wrangler.toml           # Worker 名称、端口、ALLOWED_ORIGINS 白名单
+│  ├─ package.json            # dev / deploy / typecheck / check 脚本
+│  ├─ tsconfig.json           # Workers 类型 + strict
+│  ├─ src/config.ts           # 白名单、大小与条数上限、超时
+│  ├─ src/index.ts            # POST /api/chat：校验 → 转发 → 流式透传
+│  └─ test/worker-check.mjs   # 无依赖接口与安全自检（38 项）
 └─ project_memory/            # 项目长期记忆（状态 / 决策 / 地图）
 ```
 
@@ -200,8 +206,46 @@ node scripts/screenshot.mjs http://localhost:5173/
 其中包含**本地存储行为验证**：未勾选「记住此设备」时清空 `sessionStorage` 后 Key 必须消失；
 勾选后必须跨会话保留；「清除 API 配置」后必须两处都清干净。
 
-> **本地完整链路**：`localhost 页面 → localhost Worker → DeepSeek`。
-> Worker 将在**阶段 4** 创建，届时用 `npx wrangler dev`（或 `npm run dev`，在 `worker/` 目录内）启动在 `http://localhost:8787`，前端通过 `.env.development` 中的 `VITE_API_ENDPOINT` 连接它。
+> **本地完整链路**：`localhost 页面 → localhost Worker → DeepSeek`，分两个终端启动：
+
+**终端 1 —— 启动 Worker**（默认 http://127.0.0.1:8787）
+
+```bash
+cd demo/worker
+npm install          # 首次需要
+npm run dev          # 等价于 npx wrangler dev
+```
+
+看到下面的输出即成功：
+
+```
+⎔ Starting local server...
+[wrangler:info] Ready on http://127.0.0.1:8787
+```
+
+> ⚠️ Worker **不需要**任何 API Key 环境变量。用户 Key 由浏览器在每次请求中临时携带。
+
+**终端 2 —— 启动前端**（http://localhost:5173）
+
+```bash
+cd demo
+npm run dev
+```
+
+前端通过 `.env.development` 中的 `VITE_API_ENDPOINT=http://localhost:8787/api/chat`
+连接本地 Worker，两者端口必须一致（Worker 端口配在 `worker/wrangler.toml` 的 `[dev] port`）。
+
+**验证 Worker 是否正常**（可选）
+
+```bash
+# 浏览器打开，或：
+curl http://127.0.0.1:8787/api/health
+
+cd demo/worker && npm run check    # 38 项接口与安全自检
+```
+
+`npm run check` 会用假 Key 真实请求一次 DeepSeek，验证转发链路与错误映射，
+**不需要真实 API Key，也不产生任何费用**。
 
 ---
 
@@ -283,9 +327,8 @@ node scripts/screenshot.mjs http://localhost:5173/
 | --- | --- | --- |
 | 1 | 项目骨架，`npm run dev` 可运行 | ✅ 已完成 |
 | 2 | 完整静态 UI（模拟消息） | ✅ 已完成 |
-| 3 | API 设置（Key 输入 / 保存 / 测试连接） | ✅ 已完成（Key 存储与设置持久化；「测试连接」待 Worker 就绪） |
-| 3 | API 设置（Key 输入 / 保存 / 测试连接） | ⬜ |
-| 4 | 建立 Cloudflare Worker | ⬜ |
+| 3 | API 设置（Key 输入 / 保存 / 测试连接） | ✅ 已完成（Key 存储与设置持久化） |
+| 4 | 建立 Cloudflare Worker | ✅ 已完成 |
 | 5 | 打通 DeepSeek 非流式请求 | ⬜ |
 | 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 7 | 网页接入 Streaming + 停止生成 | ⬜ |
@@ -296,6 +339,84 @@ node scripts/screenshot.mjs http://localhost:5173/
 | 12 | 移动端适配 | ⬜ |
 | 13 | 生产 Build 验收 | ⬜ |
 | 14 | Cloudflare Pages + Worker 部署 | ⬜ |
+
+---
+
+## 10. Worker 接口说明
+
+### `GET /api/health`
+
+无需鉴权，用于部署后确认 Worker 是否可用：
+
+```json
+{ "ok": true, "service": "ai-edu-agent-api", "version": "0.1.0", "allowedOrigins": 4, "upstreams": ["https://api.deepseek.com"] }
+```
+
+### `POST /api/chat`
+
+请求体：
+
+```json
+{
+  "apiKey": "sk-xxxxxxxx（仅本次请求使用，服务端不保存）",
+  "baseUrl": "https://api.deepseek.com",
+  "model": "deepseek-chat",
+  "messages": [
+    { "role": "system", "content": "系统提示词" },
+    { "role": "user", "content": "用户消息" }
+  ],
+  "temperature": 0.7,
+  "stream": true
+}
+```
+
+- `stream: true`（默认）→ 原样透传上游 SSE 流，`Content-Type: text/event-stream`。
+- `stream: false` → 透传上游 JSON，用于「测试连接」等一次性请求。
+- 所有响应带 `Cache-Control: no-store`。
+
+### 错误响应格式（前端直接展示 `message`）
+
+```json
+{
+  "error": {
+    "code": "invalid_api_key",
+    "message": "API Key 不正确或已失效，请在「API 设置」中检查后重新填写。",
+    "status": 401,
+    "detail": "（已脱敏的上游原始信息，用于「查看技术详情」）"
+  }
+}
+```
+
+| code | 含义 | 前端提示 |
+| --- | --- | --- |
+| `invalid_api_key` | 401 | API Key 不正确 |
+| `insufficient_balance` | 402 | 余额不足或账户异常 |
+| `rate_limited` | 429 | 请求过于频繁 |
+| `model_not_found` | 404 | 模型不存在 |
+| `bad_request` | 400 / 422 | 参数有误 |
+| `upstream_error` | 5xx | 模型服务异常 |
+| `upstream_unreachable` | 网络失败 | 无法连接模型服务 |
+| `upstream_timeout` | 超时 | 模型服务响应超时 |
+| `payload_too_large` | 413 | 请求内容过大 |
+| `base_url_not_allowed` | 400 | API 地址不被允许（SSRF 防护） |
+| `origin_not_allowed` | 403 | 网页来源未授权 |
+| `worker_error` | 500 | 转发服务异常 |
+
+### 安全边界（`worker/src/index.ts` + `worker/src/config.ts`）
+
+| 项 | 实现 |
+| --- | --- |
+| 只允许 POST | 其他方法返回 405；`OPTIONS` 仅用于 CORS 预检 |
+| 正文大小限制 | 512 KB（先看 `Content-Length`，再按实际字节数复核） |
+| 字段校验 | apiKey / model / messages 必有，role 白名单，条数 ≤ 60，单条 ≤ 24000 字符，temperature ∈ [0,2] |
+| SSRF 防护 | Base URL 必须是 `https`、origin 命中白名单、禁止 URL 内携带凭据 / 查询串 / hash / 非标准端口 |
+| CORS 白名单 | `ALLOWED_ORIGINS` 逗号分隔，支持 `*.xxx.pages.dev`；非白名单来源返回 403 |
+| 不缓存 | 所有响应 `Cache-Control: no-store` |
+| 不落盘 | 无 KV / D1 / 缓存 API；Worker 无状态 |
+| 不泄露 | 不调用 `console`，错误信息中的 Key 与 Bearer 一律脱敏，`Authorization` 从不出现在响应里 |
+
+> **为什么来源被拒时仍然回显 CORS 头？** 这样前端能读到「来源未授权，请检查 ALLOWED_ORIGINS」
+> 这条可操作的提示，而不是一个无法定位的 CORS 报错。该响应只包含错误说明，不含任何数据。
 
 ---
 
@@ -371,3 +492,37 @@ set CHROME_PATH=D:\你的路径\chrome.exe   # Windows CMD
 $env:CHROME_PATH="D:\你的路径\chrome.exe" # PowerShell
 npm run check:ui
 ```
+
+### 12.9 页面报 CORS 错误 / Worker 返回 `origin_not_allowed`
+
+说明访问网页的域名不在 Worker 的 `ALLOWED_ORIGINS` 里。打开 `worker/wrangler.toml`，
+把你的域名加进去（必须是完整 origin，含协议，不要以 `/` 结尾），然后重新部署：
+
+```toml
+[vars]
+ALLOWED_ORIGINS = "https://你的项目.pages.dev,https://*.你的项目.pages.dev,http://localhost:5173"
+```
+
+```bash
+cd demo/worker && npx wrangler deploy
+```
+
+### 12.10 页面报「无法连接模型服务」/ Worker 请求失败
+
+1. 确认 Worker 在跑：浏览器打开 `http://127.0.0.1:8787/api/health` 应返回 `{"ok":true,...}`。
+2. 确认端口一致：`worker/wrangler.toml` 的 `[dev] port` 与 `.env.development` 的
+   `VITE_API_ENDPOINT` 必须是同一个端口。
+3. 生产环境确认 `.env.production` 已改成真实 Worker 地址，并且**重新构建**过前端。
+4. 修改 `.env.*` 后必须重启 `npm run dev`。
+
+### 12.11 返回 `base_url_not_allowed`
+
+Worker 出于 SSRF 防护只允许白名单内的 API 地址。默认只允许 `https://api.deepseek.com`
+（支持 `/v1` 这类路径变体）。要接入其他 OpenAI 兼容服务，请修改
+`worker/src/config.ts` 的 `ALLOWED_BASE_URL_ORIGINS` 后重新部署 Worker。
+
+### 12.12 `wrangler dev` 启动失败
+
+- 首次使用需要登录：`npx wrangler login`（仅部署需要，本地开发不需要）。
+- 8787 端口被占用：改 `wrangler.toml` 的 `[dev] port`，并同步改 `.env.development`。
+- 提示 `compatibility_date` 过新：把 `wrangler.toml` 里的日期改成不晚于今天的日期。

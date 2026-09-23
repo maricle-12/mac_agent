@@ -50,9 +50,23 @@ demo/
 │  ├─ mocks/                 # ✅ 阶段 2 临时模拟数据（阶段 7 / 9 后删除）
 │  ├─ components/            # ✅ layout / chat / settings / history / common
 │  └─ App.tsx                # ✅ 组装层，只做状态编排与弹窗调度
-├─ worker/                   # ⏳ 阶段 4：Cloudflare Worker（独立 package.json + wrangler.toml）
+├─ worker/                   # ✅ 阶段 4：Cloudflare Worker
+│  ├─ wrangler.toml          # name / [dev] port=8787 / ALLOWED_ORIGINS
+│  ├─ src/config.ts          # 上游 origin 白名单、大小与条数上限、超时
+│  ├─ src/index.ts           # POST /api/chat（校验 → 转发 → 流式透传）+ GET /api/health
+│  └─ test/worker-check.mjs  # 38 项无依赖接口与安全自检
 └─ project_memory/           # 项目长期记忆
 ```
+
+## Worker 要点
+
+- 请求：`POST /api/chat`，body 为 `{ apiKey, baseUrl, model, messages, temperature?, maxTokens?, stream? }`。
+- 响应：`stream: true` 原样透传 SSE；`stream: false` 透传上游 JSON；
+  错误统一为 `{ error: { code, message, status, detail } }`，前端直接展示 `message`。
+- 安全：方法限制、512 KB 正文上限、字段校验、Base URL origin 白名单（防 SSRF）、
+  CORS 白名单（支持 `*.xxx.pages.dev`）、`no-store`、无 KV/D1、不调用 `console`、Key 全程脱敏。
+- 本地端口 8787，必须与前端 `.env.development` 的 `VITE_API_ENDPOINT` 一致。
+- 部署 Pages 后必须把 Pages 域名加入 `wrangler.toml` 的 `ALLOWED_ORIGINS` 并重新 `wrangler deploy`。
 
 ## 本地存储约定
 

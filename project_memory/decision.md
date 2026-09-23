@@ -95,3 +95,27 @@ Decision: `useConversations(initialMode)` 接收当前模式，初始化时选�
 Reason: 模式偏好持久化在 localStorage，而会话默认选中最近一条；两者不一致会导致刷新后顶部显示学生模式、正文却是教师会话。
 
 Impact: 阶段 9 / 10 接入 IndexedDB 后应改为持久化 `activeConversationId` 并由会话推导模式，但「模式与内容必须一致」这一约束要保留。
+
+## Worker 的安全边界：origin 白名单 + 上游 origin 白名单
+
+Decision: Worker 用两层白名单——`ALLOWED_ORIGINS`（谁可以调用它，防被别的站点当免费代理）与 `ALLOWED_BASE_URL_ORIGINS`（它能请求谁，防 SSRF）。Base URL 还要求 https、禁止 URL 内携带凭据 / 查询串 / hash / 非标准端口。
+
+Reason: 用户明确要求「不要开放危险 Proxy」「必须对 Base URL 做安全校验」「生产不要用 `Access-Control-Allow-Origin: *`」。
+
+Impact: 接入新的 OpenAI 兼容服务必须显式修改 `worker/src/config.ts` 的白名单并重新部署；不要为了方便放开为 `*`。
+
+## 来源被拒时仍然回显 CORS 头
+
+Decision: `origin_not_allowed`（403）的响应会回显请求方的 `Access-Control-Allow-Origin`，让前端能读到这条错误。
+
+Reason: 否则浏览器只会给出一个无法定位的 CORS 报错，新手用户完全不知道要去改 `ALLOWED_ORIGINS`。
+
+Impact: 该分支只返回错误说明、不含任何数据，因此不构成信息泄露；但**只有这一条错误分支**可以回显未授权来源，其余所有响应必须严格按白名单处理。
+
+## Worker 只透传上游的 Content-Type
+
+Decision: 流式透传时只复制 `Content-Type`，不复制 `Content-Encoding`、`Content-Length` 等头。
+
+Reason: Workers 的 `fetch` 已经自动解压上游 body，若同时透传 `Content-Encoding`，浏览器会尝试二次解压导致响应损坏。
+
+Impact: 后续若改为直接转发原始字节，必须重新审视这套头处理逻辑。

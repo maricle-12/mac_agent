@@ -1,0 +1,17 @@
+name = "ai-edu-agent-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# 本地开发端口，需与前端 .env.development 中的 VITE_API_ENDPOINT 保持一致
+[dev]
+port = 8787
+
+# 允许调用本 Worker 的站点来源，逗号分隔，必须是完整的 origin（含协议与端口）。
+#
+# ⚠️ 部署 Cloudflare Pages 之后，务必把你的 Pages 域名加进来，例如：
+#    ALLOWED_ORIGINS = "https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev"
+# 其中 *.xxx.pages.dev 用于匹配 Pages 的预览部署域名。
+#
+# 修改后重新执行：npx wrangler deploy
+[vars]
+ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173"
