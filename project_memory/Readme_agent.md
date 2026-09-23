@@ -37,9 +37,10 @@ demo/
 ├─ .env.production           # 生产端点（部署 Worker 后填写）
 ├─ public/_redirects         # Cloudflare Pages SPA 回退，避免刷新 404
 ├─ scripts/
-│  ├─ ui-check.mjs           # ✅ 无依赖 UI 自动化检查（CDP，19 项断言 + 控制台错误）
+│  ├─ ui-check.mjs           # ✅ 无依赖 UI 自动化检查（CDP，28 项断言 + 控制台错误）
 │  ├─ sse-parse-check.mjs    # ✅ SSE 解析器单元验证（30 项，含逐字节与随机切分）
 │  ├─ stream-check.mjs       # ✅ 真实流式链路验证（需 DEEPSEEK_API_KEY，测首字节与分块时间）
+│  ├─ preview-pages.mjs      # ✅ 类 Cloudflare Pages 本地预览（应用 dist/_redirects）
 │  └─ screenshot.mjs         # ✅ 无依赖页面截图工具（输出到 screenshots/，已 gitignore）
 ├─ src/
 │  ├─ config/                # ✅ 品牌与 API 配置、快捷卡片文案

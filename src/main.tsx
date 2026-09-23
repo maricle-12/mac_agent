@@ -4,7 +4,9 @@ import { createRoot } from 'react-dom/client'
 import App from '@/App'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import '@/index.css'
-import 'katex/dist/katex.min.css'
+
+// KaTeX 的样式在 MathMarkdown（懒加载分块）里引入：
+// 没有公式的对话不需要下载它，见 MarkdownRenderer 的说明。
 
 const container = document.getElementById('root')
 

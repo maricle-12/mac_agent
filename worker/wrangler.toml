@@ -8,10 +8,13 @@ port = 8787
 
 # 允许调用本 Worker 的站点来源，逗号分隔，必须是完整的 origin（含协议与端口）。
 #
+# 本地端口说明：5173 是 vite dev，4173 是 vite preview，4180 是 preview:pages（类 Pages 预览）。
+#
 # ⚠️ 部署 Cloudflare Pages 之后，务必把你的 Pages 域名加进来，例如：
 #    ALLOWED_ORIGINS = "https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev"
 # 其中 *.xxx.pages.dev 用于匹配 Pages 的预览部署域名。
+# 本地端口在生产环境可以删掉，只保留你的 Pages 域名更安全。
 #
 # 修改后重新执行：npx wrangler deploy
 [vars]
-ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173"
+ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:4173,http://localhost:4180,http://127.0.0.1:5173,http://127.0.0.1:4173,http://127.0.0.1:4180"

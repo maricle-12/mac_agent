@@ -21,8 +21,9 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    // 不产出 sourcemap：既是体积考虑，也避免把源码结构暴露到公网
     sourcemap: false,
-    // KaTeX 体积较大，阶段 13 做代码分割后再收紧该阈值
-    chunkSizeWarningLimit: 900,
+    // 公式相关依赖已拆成按需加载的分块（见 MarkdownRenderer），
+    // 主包与其分块都应低于默认的 500 kB 阈值，因此不放开该限制。
   },
 })

@@ -78,7 +78,8 @@ Decision: 源码文件（尤其含中文的 UTF-8 文件）一律使用编辑器
 
 Reason: 本机默认 shell 是 Windows PowerShell 5.1，`Set-Content` 默认使用 ANSI 编码，实测会把 `src/mocks/mockData.ts` 的中文写成乱码，导致读取失败、必须重建文件。
 
-Impact: 需要批量文本替换时使用 `pwsh`（PowerShell 7）或显式指定 `-Encoding utf8`；命令行的编码问题也写入 README 排查章节（12.5）。
+Impact: 需要批量文本替换时使用 `pwsh`（PowerShell 7）或显式指定 `-Encoding utf8`；命令行的编码问题也写入 README 排查章节（15.5）。
+例外：如需用 PowerShell 批量替换，可用 `[System.IO.File]::ReadAllText/WriteAllText` 搭配显式 `UTF8Encoding($false)` —— 这是安全的（实测通过），危险的是 `Set-Content` 的默认 ANSI 编码。
 
 ## API Key 的存储位置是单一事实来源
 

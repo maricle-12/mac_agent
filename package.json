@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "preview:pages": "node scripts/preview-pages.mjs",
     "typecheck": "tsc -b",
     "check:ui": "node scripts/ui-check.mjs",
     "check:sse": "node scripts/sse-parse-check.mjs",

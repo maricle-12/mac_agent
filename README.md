@@ -183,6 +183,7 @@ npm run dev
 | `npm run dev` | 启动本地开发服务器（热更新） |
 | `npm run build` | 生产构建（先做 TypeScript 全量类型检查，再打包到 `dist/`） |
 | `npm run preview` | 本地预览 `dist/` 构建产物（http://localhost:4173） |
+| `npm run preview:pages` | **类 Cloudflare Pages 预览**（http://localhost:4180，会应用 `dist/_redirects`） |
 | `npm run typecheck` | 只做类型检查 |
 | `npm run check:ui` | 无头浏览器 UI 自动化检查（需先启动 `npm run dev` 或 `npm run preview`） |
 | `npm run check:sse` | SSE 解析器单元验证（含逐字节切分等极端情况，无需网络） |
@@ -248,11 +249,15 @@ system 消息位于最前且**有且仅有一条**、连续请求后不会在历
 ```bash
 # 新建 demo/.env.production.local，内容：
 #   VITE_API_ENDPOINT=http://127.0.0.1:8787/api/chat
-npm run build && npm run preview
-node scripts/ui-check.mjs http://localhost:4173/     # 预期 23 项全部通过
+npm run build && npm run preview:pages
+node scripts/ui-check.mjs http://localhost:4180/     # 预期 28 项全部通过
 ```
 
 检查完记得删除该文件（它只用于本地验证，不应提交）。
+
+`npm run preview:pages` 是**类 Cloudflare Pages 的本地预览服务器**：它会读取
+`dist/_redirects` 并按 Pages 的语义处理，因此本地就能验证「刷新 SPA 深层路径不会 404」
+（`vite preview` 不实现该规则）。
 
 > **本地完整链路**：`localhost 页面 → localhost Worker → DeepSeek`，分两个终端启动：
 
@@ -422,7 +427,7 @@ Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善
 
 ---
 
-## 10. 开发路线图（14 个阶段）
+## 11. 开发路线图（14 个阶段）
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
@@ -438,12 +443,12 @@ Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善
 | 10 | 新建 / 删除 / 重命名对话 | ✅ 已完成 |
 | 11 | 错误处理完善 | ✅ 已完成 |
 | 12 | 移动端适配 | ✅ 已完成 |
-| 13 | 生产 Build 验收 | ⬜ |
+| 13 | 生产 Build 验收 | ✅ 已完成 |
 | 14 | Cloudflare Pages + Worker 部署 | ⬜ |
 
 ---
 
-## 10. Worker 接口说明
+## 12. Worker 接口说明
 
 ### `GET /api/health`
 
@@ -580,15 +585,46 @@ Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善
 
 ---
 
-## 11. Cloudflare 部署步骤
+## 13. 生产构建体积与验收
+
+### 体积（`npm run build`）
+
+| 产物 | 未压缩 | gzip | 何时加载 |
+| --- | --- | --- | --- |
+| `index.js`（应用外壳 + React + 基础 Markdown） | 443 kB | **137 kB** | 首屏 |
+| `index.css` | 31 kB | 7 kB | 首屏 |
+| `MathMarkdown.js`（remark-math + rehype-katex + KaTeX） | 274 kB | 83 kB | **仅当回答里出现 `$` 公式时** |
+| `MathMarkdown.css`（KaTeX 样式） | 30 kB | 8 kB | 同上 |
+
+首屏总计约 **144 kB（gzip）**。KaTeX 及其样式被拆成按需分块 ——
+没有公式的对话完全不会下载它。字体文件带 `unicode-range`，浏览器只取用到的字形。
+
+> 想继续压体积，可把 `react-markdown` 也改成按需加载，但首屏渲染消息时会闪一下，
+> 收益（约 40 kB gzip）不值得。需要的话改 `MarkdownRenderer` 里 `React.lazy` 的边界即可。
+
+### 验收清单
+
+| 验收项 | 状态 | 验证方式 |
+| --- | --- | --- |
+| `npm run build` 无 TypeScript 错误 | ✅ | `tsc -b` |
+| 无 sourcemap（不暴露源码结构） | ✅ | 扫描 `dist/**/*.map` |
+| 产物中无任何密钥 | ✅ | 扫描 `dist` 中 `sk-...` 形态字符串 |
+| 刷新 SPA 深层路径不 404 | ✅ | `npm run preview:pages` + 请求 `/some/deep/route` 应返回 200 与 `#root` |
+| 无 console 错误 | ✅ | `npm run check:ui` 汇总 console.error / 未捕获异常 / 网络错误 |
+| 压缩产物行为与开发一致 | ✅ | 对生产构建跑完整 `ui-check`（28 项） |
+| Pages 需要的文件齐全 | ✅ | `dist/_redirects`、`dist/index.html`、`dist/favicon.svg` |
+
+---
+
+## 14. Cloudflare 部署步骤
 
 > 本节将在**阶段 14** 补全为面向新手的逐步教程（注册 Cloudflare → 创建 Pages 项目 → 部署 Worker → 修改 `VITE_API_ENDPOINT` → 配置 CORS → 最终验证）。
 
 ---
 
-## 12. 常见问题排查
+## 15. 常见问题排查
 
-### 12.1 `npm install` 很慢或失败
+### 15.1 `npm install` 很慢或失败
 
 先确认网络能访问 npm 源，或换用国内镜像：
 
@@ -597,17 +633,17 @@ npm config set registry https://registry.npmmirror.com
 npm install
 ```
 
-### 12.2 端口被占用（5173 / 4173 / 8787）
+### 15.2 端口被占用（5173 / 4173 / 8787）
 
 Vite 会自动换到下一个可用端口，注意看终端输出的实际地址。Worker 端口被占用时，
 修改 `worker/wrangler.toml` 里的端口，并同步修改 `.env.development` 的
 `VITE_API_ENDPOINT`。
 
-### 12.3 改了 `.env.development` 不生效
+### 15.3 改了 `.env.development` 不生效
 
 Vite 只在启动时读取环境变量文件。改完必须**重启** `npm run dev`。
 
-### 12.4 数学公式显示成行内样式，而不是独立成行
+### 15.4 数学公式显示成行内样式，而不是独立成行
 
 `remark-math` 只有把 `$$` 写在**单独一行**时才识别为块级公式：
 
@@ -621,7 +657,7 @@ $$
 `src/utils/markdown.ts` 的 `normalizeMarkdown()` 中自动规范化，无需手动处理。
 若公式完全没渲染，检查 `src/main.tsx` 是否引入了 `katex/dist/katex.min.css`。
 
-### 12.5 Windows 上编辑源码后中文变成乱码 ⚠️
+### 15.5 Windows 上编辑源码后中文变成乱码 ⚠️
 
 **不要用 Windows PowerShell 5.1 的 `Get-Content` / `Set-Content` 改写源码文件。**
 PowerShell 5.1 的 `Set-Content` 默认使用 ANSI 编码，会把 UTF-8 中文写成乱码，
@@ -630,12 +666,12 @@ PowerShell 5.1 的 `Set-Content` 默认使用 ANSI 编码，会把 UTF-8 中文�
 正确做法：用 VS Code（右下角确认编码为 `UTF-8`）编辑；
 必须用命令行时请用 PowerShell 7（`pwsh`）或在写入时显式指定 UTF-8。
 
-### 12.6 `npm run build` 报 TypeScript 错误但页面能跑
+### 15.6 `npm run build` 报 TypeScript 错误但页面能跑
 
 Vite 开发服务器**不做类型检查**，类型错误只在 `build` 或 `typecheck` 时暴露。
 提交前请务必执行 `npm run build`。
 
-### 12.7 页面白屏
+### 15.7 页面白屏
 
 打开浏览器控制台（F12）看第一条红色报错。常见原因：
 
@@ -643,7 +679,7 @@ Vite 开发服务器**不做类型检查**，类型错误只在 `build` 或 `typ
 - 依赖没装全 → 重新执行 `npm install`；
 - 路径别名问题 → 确认 `tsconfig.app.json` 与 `vite.config.ts` 中的 `@` 指向 `${projectRoot}/src`。
 
-### 12.8 `npm run check:ui` 报「未找到 Chrome / Edge」
+### 15.8 `npm run check:ui` 报「未找到 Chrome / Edge」
 
 脚本会自动查找 Chrome / Edge。如果装在非默认位置，指定路径即可：
 
@@ -653,7 +689,7 @@ $env:CHROME_PATH="D:\你的路径\chrome.exe" # PowerShell
 npm run check:ui
 ```
 
-### 12.9 页面报 CORS 错误 / Worker 返回 `origin_not_allowed`
+### 15.9 页面报 CORS 错误 / Worker 返回 `origin_not_allowed`
 
 说明访问网页的域名不在 Worker 的 `ALLOWED_ORIGINS` 里。打开 `worker/wrangler.toml`，
 把你的域名加进去（必须是完整 origin，含协议，不要以 `/` 结尾），然后重新部署：
@@ -667,7 +703,7 @@ ALLOWED_ORIGINS = "https://你的项目.pages.dev,https://*.你的项目.pages.d
 cd demo/worker && npx wrangler deploy
 ```
 
-### 12.10 页面报「无法连接模型服务」/ Worker 请求失败
+### 15.10 页面报「无法连接模型服务」/ Worker 请求失败
 
 1. 确认 Worker 在跑：浏览器打开 `http://127.0.0.1:8787/api/health` 应返回 `{"ok":true,...}`。
 2. 确认端口一致：`worker/wrangler.toml` 的 `[dev] port` 与 `.env.development` 的
@@ -675,46 +711,46 @@ cd demo/worker && npx wrangler deploy
 3. 生产环境确认 `.env.production` 已改成真实 Worker 地址，并且**重新构建**过前端。
 4. 修改 `.env.*` 后必须重启 `npm run dev`。
 
-### 12.11 返回 `base_url_not_allowed`
+### 15.11 返回 `base_url_not_allowed`
 
 Worker 出于 SSRF 防护只允许白名单内的 API 地址。默认只允许 `https://api.deepseek.com`
 （支持 `/v1` 这类路径变体）。要接入其他 OpenAI 兼容服务，请修改
 `worker/src/config.ts` 的 `ALLOWED_BASE_URL_ORIGINS` 后重新部署 Worker。
 
-### 12.12 `wrangler dev` 启动失败
+### 15.12 `wrangler dev` 启动失败
 
 - 首次使用需要登录：`npx wrangler login`（仅部署需要，本地开发不需要）。
 - 8787 端口被占用：改 `wrangler.toml` 的 `[dev] port`，并同步改 `.env.development`。
 - 提示 `compatibility_date` 过新：把 `wrangler.toml` 里的日期改成不晚于今天的日期。
 
-### 12.13 测试连接提示「尚未配置模型转发地址」
+### 15.13 测试连接提示「尚未配置模型转发地址」
 
 说明当前构建里的 `VITE_API_ENDPOINT` 还是占位符（`https://REPLACE-WITH-YOUR-WORKER...`）。
-按第 6 章跑本地开发（会自动读取 `.env.development`），或按第 11 章部署 Worker 并修改
+按第 6 章跑本地开发（会自动读取 `.env.development`），或按第 14 章部署 Worker 并修改
 `.env.production` 后重新构建。
 
-### 12.14 测试连接成功，但聊天回答不出现或不是流式
+### 15.14 测试连接成功，但聊天回答不出现或不是流式
 
-- 先确认 `.env.production` / `.env.development` 里的端点不是占位符（见 12.13）。
+- 先确认 `.env.production` / `.env.development` 里的端点不是占位符（见 15.13）。
 - 若回答一次性整段出现、没有逐字输出：说明中间有层做了缓冲。本项目 Worker 直接透传
   `ReadableStream`，可用 `npm run check:stream` 测量首字节与分块到达时间来定位。
 - 若一直显示「AI 正在思考」不结束：可能是网络中断或上游挂死，
   前端会在 60 秒无增量后自动中断并提示；也可手动点「停止生成」。
 
-### 12.15 开发时页面莫名整页刷新
+### 15.15 开发时页面莫名整页刷新
 
 `worker/` 是独立子项目，若不排除会被 Vite 的文件监听捕获，导致改 Worker 时前端清缓存重载。
 本项目已在 `vite.config.ts` 的 `server.watch.ignored` 中排除 `worker/`、`screenshots/`、
 `project_memory/`。若你新增了其他子目录（例如将来的 `functions/`），记得一并排除。
 
-### 12.16 手机上点不到会话的「⋯」（重命名 / 删除）
+### 15.16 手机上点不到会话的「⋯」（重命名 / 删除）
 
 已按设计处理：**窄屏（<768px）下会话行的「⋯」按钮始终显示**。
 桌面端才做「悬停才出现」的收起效果。不要改成只依赖 `@media (hover: none)` ——
 不同浏览器与机型对 hover 能力的上报并不一致，会把「能否管理会话」交给一个不可靠的判断。
 如果发现手机上仍看不到该按钮，检查自定义样式的加载顺序是否覆盖了 `.conversation-more`。
 
-### 12.17 手机上软键盘盖住输入框
+### 15.17 手机上软键盘盖住输入框
 
 已做两件事：
 
