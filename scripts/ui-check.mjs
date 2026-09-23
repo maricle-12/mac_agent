@@ -10,6 +10,8 @@
  * 环境变量：
  *   CHROME_PATH  指定浏览器可执行文件路径
  *   HEADFUL=1    显示浏览器窗口（默认无头）
+ *   CHROME_PROXY 让被测浏览器走代理，例如 http://127.0.0.1:7897
+ *   WORKER_URL   被测页面所连的 Worker 地址（默认 http://127.0.0.1:8787）
  */
 
 import { spawn } from 'node:child_process'
@@ -50,6 +52,9 @@ const browser = spawn(
     '--disable-extensions',
     '--disable-background-networking',
     '--window-size=1440,900',
+    // 本机需要代理才能访问外网时（例如国内访问 *.pages.dev / *.workers.dev），
+    // 用 CHROME_PROXY=http://127.0.0.1:7897 让被测浏览器也走代理。
+    ...(process.env.CHROME_PROXY ? [`--proxy-server=${process.env.CHROME_PROXY}`] : []),
     `--user-data-dir=${userDataDir}`,
     `--remote-debugging-port=${port}`,
     'about:blank',
@@ -833,14 +838,17 @@ step('历史记录持久化：刷新后会话与消息仍在', async (ctx) => {
       answer: document.body.innerText.includes('${RICH_MARKDOWN_TEXT}'),
       userMessage: document.body.innerText.includes('什么是分类与整理'),
       table: $$('.md-body table').length,
-      katexDisplay: $$('.md-body .katex-display').length,
       code: $$('.md-body pre code').length,
     };
   `)
+  // 公式分块是懒加载的：等它到位再断言，避免把「正在下载」误判成「丢失」
+  await ctx.waitFor(`return $$('.md-body .katex-display').length >= 1;`, 15000)
+  const katexDisplay = await ctx.eval(`return $$('.md-body .katex-display').length;`)
+
   ctx.assert(rich.answer, '刷新后回答内容丢失（IndexedDB 未生效）')
   ctx.assert(rich.userMessage, '刷新后用户消息丢失')
   ctx.assert(rich.table >= 1, '刷新后 Markdown 表格丢失')
-  ctx.assert(rich.katexDisplay >= 1, '刷新后块级公式丢失')
+  ctx.assert(katexDisplay >= 1, '刷新后块级公式丢失')
   ctx.assert(rich.code >= 1, '刷新后代码块丢失')
   ctx.assert(rich.mode === '教师模式', '切回教师会话后模式未同步')
 })

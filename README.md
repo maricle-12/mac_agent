@@ -843,6 +843,63 @@ npx wrangler deploy
 | 改 System Prompt | 只改 `src/prompts/*.ts` 后重新部署前端（新请求立即生效） |
 | 改品牌配色 | 只改 `src/index.css` 的 `@theme` 后重新部署前端 |
 
+### 14.11 本次部署实录（真实地址与踩到的坑）
+
+本项目已按上述流程部署完成，实际使用的值如下，可作为对照：
+
+| 项 | 值 |
+| --- | --- |
+| Cloudflare 账号 | `2750366148@qq.com` 的账号 |
+| workers.dev 子域名 | `edu-demo-2026`（首选 `edu-demo` 已被占用） |
+| Worker 名 / 地址 | `ai-edu-agent-api` → https://ai-edu-agent-api.edu-demo-2026.workers.dev |
+| Pages 项目 / 地址 | `ai-edu-agent` → https://ai-edu-agent.pages.dev |
+| `ALLOWED_ORIGINS` | `https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev` + 本地端口 |
+
+**踩到的 6 个坑（都已解决，你可能会遇到其中的某些）**：
+
+1. **没有 workers.dev 子域名 → 部署直接失败**
+   报 `You need to register a workers.dev subdomain before publishing to workers.dev`。
+   这是**账号级一次性设置**，去 Workers & Pages 首页（或 API）注册即可。
+   子域名全 Cloudflare 唯一，`edu-demo` 就被占用了。
+
+2. **新注册的子域名的 DNS 需要等一会儿**
+   刚注册完立即访问会失败（本机解析甚至返回了错误的 IP）。
+   等约 1 分钟即正常，wrangler 输出的地址本身是对的。
+
+3. **本地 git 分支名会影响部署环境**
+   本地分支是 `master`，而项目生产分支是 `main`，直接 `wrangler pages deploy` 会部署成
+   **Preview**（`master.xxx.pages.dev`）。要上生产域名必须显式指定：
+
+   ```bash
+   npx wrangler pages deploy dist --project-name ai-edu-agent --branch main --commit-dirty=true
+   ```
+
+4. **`[vars]` 改动后边缘生效有延迟**
+   改完 `ALLOWED_ORIGINS` 重新部署，`/api/health` 里的 `allowedOrigins` 可能还要
+   半分钟到一分钟才变。不要以为没生效就反复改。
+
+5. **国内网络访问 `*.workers.dev` / `*.pages.dev` 需要代理**
+   本机直连被阻断，必须走代理才能打开。这一点对**你的用户**同样成立 ——
+   见 16.18。
+
+6. **懒加载的公式分块在慢网络下会「晚一步」**
+   首屏不含 KaTeX（这是体积优化），刷新后若第一眼就要渲染带公式的历史消息，
+   会先看到一瞬间的原始 `$$...$$`。已通过「浏览器空闲时预取公式分块」缓解
+   （`MarkdownRenderer.tsx` 的 `prefetchMathChunk`），首屏体积不受影响。
+
+### 14.12 部署后的验证结果
+
+| 验证 | 方式 | 结果 |
+| --- | --- | --- |
+| 前端可访问 | `curl https://ai-edu-agent.pages.dev` | ✅ HTTP 200 |
+| Worker 健康检查 | `GET /api/health` | ✅ `{"ok":true,...,"allowedOrigins":8}` |
+| Pages 域名预检 | `OPTIONS /api/chat` + `Origin: https://ai-edu-agent.pages.dev` | ✅ 204 + 正确的 ACAO |
+| 未授权来源被拒 | `Origin: https://evil.example.com` | ✅ 403 `origin_not_allowed` |
+| 真实上游转发 | 假 Key POST（非流式与流式） | ✅ 401 `invalid_api_key` + 中文提示，Key 脱敏为 `****0000` |
+| SSRF 防护 | `baseUrl: https://evil.example.com` | ✅ 400 `base_url_not_allowed` |
+| Worker 全量自检 | `node worker/test/worker-check.mjs <线上地址>` | ✅ **38/38 通过** |
+| 前端全量检查 | 无头浏览器打公网链接（走代理） | ✅ **28/28 通过** |
+
 ---
 
 ## 15. 最终验收清单
@@ -851,12 +908,12 @@ npx wrangler deploy
 
 | # | 验收项 | 状态 | 验证方式 |
 | --- | --- | --- | --- |
-| 1 | 打开公网链接能够显示页面 | ⏳ 待你部署后确认 | 14.9 第 1 步 |
+| 1 | 打开公网链接能够显示页面 | ✅ | https://ai-edu-agent.pages.dev 返回 200，无头浏览器 28/28 通过 |
 | 2 | 不登录即可使用 | ✅ | 无账号系统，直接可用 |
 | 3 | 可以填写 DeepSeek API Key | ✅ | 设置弹窗；ui-check「API 设置弹窗」 |
 | 4 | API Key 不写死在源码 | ✅ | `git grep 'sk-[A-Za-z0-9]{20,}'` 无结果；产物扫描无密钥 |
 | 5 | 可以测试 API | ✅ | 「测试连接」（成功 / 失败两条分支均有自动化用例） |
-| 6 | DeepSeek 能正常回答 | ⏳ 需你的 Key | `npm run check:stream`（真实流式链路） |
+| 6 | DeepSeek 能正常回答 | ⏳ 需你的 Key | 用真实 Key 在浏览器里问一句；或 `npm run check:stream` |
 | 7 | AI 使用 Streaming 输出 | ✅ | ui-check「流式增量渲染」断言内容随时间增长 |
 | 8 | 能停止生成 | ✅ | ui-check「停止生成」断言保留内容且 AbortSignal 触发 |
 | 9 | 教师模式 Prompt 正确 | ✅ | ui-check 拦截请求体断言 system 内容 |
@@ -869,14 +926,18 @@ npx wrangler deploy
 | 16 | 可以复制 AI 回答 | ✅ | 消息下方「复制」按钮（含降级方案） |
 | 17 | API 错误有友好提示 | ✅ | 第 12 章错误对照表（13 种场景） |
 | 18 | 页面手机端可使用 | ✅ | ui-check 4 种尺寸 + 触摸目标 + 窄屏常显操作按钮 |
-| 19 | Cloudflare Pages 部署正常 | ⏳ 待你部署后确认 | 14.6 |
-| 20 | Worker 部署正常 | ⏳ 待你部署后确认 | 14.5 |
+| 19 | Cloudflare Pages 部署正常 | ✅ | https://ai-edu-agent.pages.dev（Production / main） |
+| 20 | Worker 部署正常 | ✅ | https://ai-edu-agent-api.edu-demo-2026.workers.dev，线上自检 38/38 |
 | 21 | 不需要 VPS | ✅ | 纯静态 + 无状态 Worker |
 | 22 | 不需要数据库 | ✅ | IndexedDB 在浏览器本地；Worker 无 KV / D1 |
 | 23 | 不需要 Coze / Dify | ✅ | 未使用任何低代码 Agent 平台 |
 | 24 | 用户模型费用由自己的 API Key 承担 | ✅ | Key 由用户输入，Worker 不持有任何 Key |
 
-标记 ⏳ 的 4 条只能由你在真实 Cloudflare 账号上完成后确认。
+标记 ⏳ 的条目需要你自己的 DeepSeek API Key 才能确认（我没有 Key，只能验证到「假 Key 打通链路」这一层）。
+
+**已由代理在公网环境验证的（非本地模拟）**：前端可访问、Worker 健康检查、
+CORS 白名单放行与拒绝、真实上游 401 映射与密钥脱敏、SSRF 防护、
+Worker 全量自检 38/38、前端全量检查 28/28 —— 详见 14.12。
 
 ---
 
@@ -1017,3 +1078,29 @@ Worker 出于 SSRF 防护只允许白名单内的 API 地址。默认只允许 `
 
 若仍有遮挡，检查是否又用回了 `100vh`/`h-screen` —— 它们在移动端等于**最大**视口高度，
 键盘弹出时不会收缩。
+
+### 16.18 ⚠️ 国内用户打不开 `*.pages.dev` / `*.workers.dev`
+
+这是**必须提前知道的限制**，不是代码问题：
+
+- `workers.dev` 与 `pages.dev` 在中国大陆**访问不稳定甚至被直接阻断**。
+  本机实测：直连失败，走代理正常。
+- 也就是说，如果你的用户在大陆且没有代理，他们可能**打不开你部署后的链接** ——
+  这与「一个链接即可访问」的产品目标直接冲突。
+
+可选应对（按推荐顺序）：
+
+1. **绑定自定义域名**（在 Cloudflare Pages 里加 Custom domain）。
+   自带域名的**可访问性通常明显好于 `pages.dev`**，是最省事的一步。
+   注意：域名仍需能解析到 Cloudflare 的 IP，且大陆访问质量取决于线路。
+2. **换部署平台**：前端放到国内可直连的静态托管。
+   代价是偏离需求文档指定的 Cloudflare Pages，Worker 转发也要跟着搬。
+3. **只面向海外/有代理的用户**：当前状态即可用。
+
+> 如果你要继续用 Cloudflare，建议先在第 1 条上做验证：
+> 绑好自定义域名后，用手机 4G（不走代理）打开试试，确认目标用户能访问。
+
+### 16.19 部署相关的其他坑
+
+见 14.11，那里记录了本次真实部署踩到的 6 个坑（子域名注册、DNS 传播、
+git 分支决定部署环境、`[vars]` 边缘延迟、代理、懒加载分块晚一步）。

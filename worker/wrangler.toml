@@ -8,13 +8,14 @@ port = 8787
 
 # 允许调用本 Worker 的站点来源，逗号分隔，必须是完整的 origin（含协议与端口）。
 #
-# 本地端口说明：5173 是 vite dev，4173 是 vite preview，4180 是 preview:pages（类 Pages 预览）。
+# ⚠️ 已部署的 Pages 域名必须同时写「正式域名」与「通配符」：
+#    通配符 *.x.pages.dev 不匹配 x.pages.dev 本身，只写通配符会导致正式域名被 CORS 拒绝。
+#    通配符用于覆盖每次部署产生的预览域名。
 #
-# ⚠️ 部署 Cloudflare Pages 之后，务必把你的 Pages 域名加进来，例如：
-#    ALLOWED_ORIGINS = "https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev"
-# 其中 *.xxx.pages.dev 用于匹配 Pages 的预览部署域名。
-# 本地端口在生产环境可以删掉，只保留你的 Pages 域名更安全。
+# 本地端口（5173 dev / 4173 vite preview / 4180 preview:pages）保留是为了方便
+# 「本地页面连线上 Worker」调试；它们只有本机网页能用，不构成风险。
+# 若要最严格，可以只保留上面的 Pages 域名。
 #
 # 修改后重新执行：npx wrangler deploy
 [vars]
-ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:4173,http://localhost:4180,http://127.0.0.1:5173,http://127.0.0.1:4173,http://127.0.0.1:4180"
+ALLOWED_ORIGINS = "https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev,http://localhost:5173,http://localhost:4173,http://localhost:4180,http://127.0.0.1:5173,http://127.0.0.1:4173,http://127.0.0.1:4180"

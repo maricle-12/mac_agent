@@ -17,7 +17,28 @@ import { normalizeMarkdown } from '@/utils/markdown'
  *
  * 正文排版样式集中在 index.css 的 .md-body 中。
  */
-const MathMarkdown = lazy(() => import('@/components/chat/MathMarkdown'))
+const loadMathMarkdown = () => import('@/components/chat/MathMarkdown')
+const MathMarkdown = lazy(loadMathMarkdown)
+
+/**
+ * 空闲时预取公式分块。
+ *
+ * 懒加载保证了首屏体积（443 kB / gzip 137 kB，不含 KaTeX 的 274 kB），
+ * 但代价是：如果刷新后第一眼就要渲染带公式的历史消息，
+ * 用户会先看到一瞬间的原始 `$$...$$` 再变成公式。
+ * 因此在浏览器空闲时后台预取一次 —— 首屏不受影响，
+ * 真出现公式时（尤其是在线部署、网络较慢时）就已经在缓存里了。
+ */
+function prefetchMathChunk(): void {
+  const idle = window.requestIdleCallback
+  if (typeof idle === 'function') {
+    idle(() => void loadMathMarkdown(), { timeout: 4000 })
+    return
+  }
+  window.setTimeout(() => void loadMathMarkdown(), 3000)
+}
+
+prefetchMathChunk()
 
 function BaseMarkdown({ content }: { content: string }) {
   return (
