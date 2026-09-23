@@ -209,8 +209,11 @@ set DEEPSEEK_API_KEY=sk-xxxx && npm run check:stream      # CMD
 node scripts/screenshot.mjs http://localhost:5173/
 ```
 
-`ui-check.mjs` 会检查 23 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
+`ui-check.mjs` 会检查 25 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
 修改 UI 后建议先跑一遍，能第一时间发现渲染或交互回归。
+
+其中包含**会话管理验证**：新建 / ⋯ 菜单 / 重命名（空标题被拒绝、改名后刷新仍在）/
+删除确认与取消 / **删除当前会话后自动选中相邻会话** / 删除后刷新不复活。
 
 其中包含**历史记录持久化验证**（直接读写 IndexedDB 校验，不只看界面）：
 刷新后会话与消息仍在（含 Markdown、表格、公式）、刷新后回到上次活跃的会话、
@@ -427,7 +430,8 @@ Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善
 | 7 | 网页接入 Streaming + 停止生成 | ✅ 已完成 |
 | 8 | 教师 / 学生 System Prompt | ✅ 已完成 |
 | 9 | IndexedDB 历史记录 | ✅ 已完成 |
-| 10 | 新建 / 删除 / 重命名对话 | ⬜ |
+| 10 | 新建 / 删除 / 重命名对话 | ✅ 已完成 |
+| 11 | 错误处理完善 | ⬜ |
 | 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 7 | 网页接入 Streaming + 停止生成 | ⬜ |
 | 8 | 教师 / 学生 System Prompt | ⬜ |

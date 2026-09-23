@@ -169,6 +169,16 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
 
   const create = useCallback(
     (mode: AgentMode, title = '新对话') => {
+      // 已经存在一个同模式的空白会话时直接复用：
+      // 反复点「新建对话」不应该在历史里堆出一串空对话。
+      const existingBlank = conversations.find(
+        (item) => item.mode === mode && item.messages.length === 0 && item.title === '新对话',
+      )
+      if (existingBlank) {
+        setActiveId(existingBlank.id)
+        return existingBlank.id
+      }
+
       const now = Date.now()
       const conversation: Conversation = {
         id: createId('c_'),
@@ -185,7 +195,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
       setActiveId(conversation.id)
       return conversation.id
     },
-    [],
+    [conversations],
   )
 
   const select = useCallback((id: string) => {
@@ -212,10 +222,19 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
     (id: string) => {
       cancelPending(id)
       void deleteStoredConversation(id)
+
+      // 删除当前会话时自动选中相邻会话（优先下一条，其次上一条），
+      // 避免用户删完当前会话后被丢进空白页。
+      const index = conversations.findIndex((conversation) => conversation.id === id)
+      const fallback =
+        (index >= 0 ? conversations[index + 1] : undefined) ??
+        (index >= 0 ? conversations[index - 1] : undefined) ??
+        null
+
       setConversations((prev) => prev.filter((conversation) => conversation.id !== id))
-      setActiveId((prev) => (prev === id ? null : prev))
+      setActiveId((prev) => (prev === id ? (fallback?.id ?? null) : prev))
     },
-    [cancelPending],
+    [cancelPending, conversations],
   )
 
   const clearAll = useCallback(() => {

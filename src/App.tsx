@@ -221,6 +221,7 @@ export default function App() {
             </Button>
             <Button
               variant="primary"
+              disabled={renameValue.trim().length === 0}
               onClick={() => {
                 if (renaming) store.rename(renaming.id, renameValue)
                 setRenaming(null)

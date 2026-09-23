@@ -267,6 +267,12 @@ const CONVERSATION_COUNT_EXPR = `
   return $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length;
 `
 
+/** 侧边栏纯文本（标题断言要限定在侧边栏内，消息正文里也可能出现同样的字样） */
+const SIDEBAR_TEXT_EXPR = `
+  const sidebar = document.querySelector('[data-testid="sidebar-desktop"]');
+  return sidebar ? sidebar.textContent : '';
+`
+
 /** 找到指定标题的可见会话行上的 ⋯ 按钮并点击 */
 function openConversationMenuExpr(target) {
   return `
@@ -1321,6 +1327,117 @@ step('删除对话：⋯ 菜单 → 确认弹窗 → 取消 / 删除后刷新不
       IndexedDB(删除前): ${dbBefore.count} 条 [${dbBefore.rows.join(' | ')}]
       刷新后剩余: [${afterReload.rows.join(' | ')}]`,
   )
+})
+
+step('重命名对话：空标题被拒绝、改名后刷新仍在', async (ctx) => {
+  const original = '学生模式校验'
+  const renamed = '学生会话（改名验证）'
+
+  const opened = await ctx.eval(openConversationMenuExpr(original))
+  ctx.assert(opened, '未能打开会话的 ⋯ 菜单')
+  await sleep(250)
+  await ctx.eval(`return clickText('重命名');`)
+  await sleep(300)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('重命名对话');`),
+    '未出现重命名弹窗',
+  )
+
+  // 标题为空白时「保存」应不可用
+  await ctx.eval(`
+    const input = $$('input[type="text"]').find((el) => el.maxLength === 40);
+    if (!input) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '   ');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  `)
+  await sleep(250)
+  ctx.assert(
+    await ctx.eval(`const btn = byExact('保存'); return Boolean(btn) && btn.disabled === true;`),
+    '标题为空白时「保存」应不可用',
+  )
+
+  const setTitle = (value) => `
+    const input = $$('input[type="text"]').find((el) => el.maxLength === 40);
+    if (!input) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, ${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  `
+
+  await ctx.eval(setTitle(renamed))
+  await sleep(200)
+  await ctx.eval(`return clickExact('保存');`)
+  await sleep(400)
+
+  ctx.assert(
+    (await ctx.eval(SIDEBAR_TEXT_EXPR)).includes(renamed),
+    '重命名后侧边栏未更新',
+  )
+  ctx.assert(
+    !(await ctx.eval(SIDEBAR_TEXT_EXPR)).includes(original),
+    '重命名后侧边栏仍显示旧标题',
+  )
+
+  await ctx.reload()
+  ctx.assert(
+    (await ctx.eval(SIDEBAR_TEXT_EXPR)).includes(renamed),
+    '刷新后重命名丢失（IndexedDB 未生效）',
+  )
+
+  // 改回原名，避免影响后续用例
+  await ctx.eval(openConversationMenuExpr(renamed))
+  await sleep(250)
+  await ctx.eval(`return clickText('重命名');`)
+  await sleep(300)
+  await ctx.eval(setTitle(original))
+  await sleep(200)
+  await ctx.eval(`return clickExact('保存');`)
+  await sleep(400)
+  ctx.assert(
+    (await ctx.eval(SIDEBAR_TEXT_EXPR)).includes(original),
+    '改回原名称失败',
+  )
+})
+
+step('删除当前会话 → 自动选中相邻会话', async (ctx) => {
+  const countBefore = await ctx.eval(CONVERSATION_COUNT_EXPR)
+  ctx.assert(countBefore >= 2, `用例前提不满足：需要至少 2 个会话，实际 ${countBefore}`)
+
+  // 选中第一个可见会话，然后删除它
+  const selected = await ctx.eval(`
+    const rows = $$('button[aria-label="更多操作"]').filter((el) => visible(el));
+    const container = rows[0] ? rows[0].closest('div') : null;
+    const button = container ? container.querySelector('button') : null;
+    if (button) button.click();
+    return Boolean(button);
+  `)
+  ctx.assert(selected, '未能选中第一个会话')
+  await sleep(450)
+
+  await ctx.eval(`
+    const more = $$('button[aria-label="更多操作"]').filter((el) => visible(el))[0];
+    if (more) more.click();
+    return Boolean(more);
+  `)
+  await sleep(250)
+  await ctx.eval(`return clickExact('删除');`)
+  await sleep(350)
+  await ctx.eval(`return clickExact('删除');`)
+  await sleep(550)
+
+  const after = await ctx.eval(`
+    const rows = $$('button[aria-label="更多操作"]').filter((el) => visible(el));
+    const activeRow = rows.find((btn) => {
+      const row = btn.closest('div');
+      return row && row.className.includes('bg-surface');
+    });
+    return { count: rows.length, hasActive: Boolean(activeRow) };
+  `)
+  ctx.assert(after.count === countBefore - 1, `删除后数量不正确: ${countBefore} → ${after.count}`)
+  ctx.assert(after.hasActive, '删除当前会话后没有自动选中相邻会话（被丢进了空状态）')
 })
 
 step('清除本地聊天记录（隐私功能）', async (ctx) => {
