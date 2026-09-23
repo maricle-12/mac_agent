@@ -37,7 +37,7 @@ export function AppLayout({
             onClick={onCloseSidebar}
             aria-hidden="true"
           />
-          <div className="absolute inset-y-0 left-0 flex w-72 max-w-[86%] border-r border-line bg-sidebar shadow-2xl">
+          <div className="drawer-safe absolute inset-y-0 left-0 flex w-72 max-w-[86%] border-r border-line bg-sidebar shadow-2xl">
             {sidebar}
           </div>
         </div>

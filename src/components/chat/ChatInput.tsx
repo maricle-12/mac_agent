@@ -49,7 +49,7 @@ export function ChatInput({
   return (
     <div
       data-testid="composer"
-      className="shrink-0 border-t border-line bg-surface px-4 pt-3 pb-4 sm:px-6"
+      className="composer-safe shrink-0 border-t border-line bg-surface px-3 pt-3 sm:px-6"
     >
       <div className="mx-auto w-full max-w-[860px]">
         <div className="rounded-2xl border border-line bg-surface shadow-sm transition-colors focus-within:border-brand/50">
@@ -71,7 +71,8 @@ export function ChatInput({
                 type="button"
                 disabled
                 aria-label="上传文件（即将支持）"
-                className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12px] text-ink-muted disabled:cursor-not-allowed"
+                title="文件上传即将支持"
+                className="flex min-h-9 items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12px] text-ink-muted disabled:cursor-not-allowed"
               >
                 <PaperclipIcon className="size-4" />
                 <span className="hidden sm:inline">上传文件</span>
@@ -89,7 +90,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={onStop}
-                  className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] font-medium text-ink-soft transition-colors hover:bg-canvas hover:text-ink"
+                  className="flex min-h-9 items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] font-medium text-ink-soft transition-colors hover:bg-canvas hover:text-ink"
                 >
                   <StopIcon className="size-3.5" />
                   停止生成
@@ -101,7 +102,7 @@ export function ChatInput({
                   disabled={!canSend}
                   aria-label="发送"
                   className={cn(
-                    'flex size-8 items-center justify-center rounded-lg transition-colors',
+                    'flex size-9 items-center justify-center rounded-lg transition-colors',
                     canSend
                       ? 'bg-brand text-white hover:bg-brand-hover'
                       : 'bg-canvas text-ink-muted',

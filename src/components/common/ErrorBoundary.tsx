@@ -1,7 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
 import { appConfig } from '@/config/app'
-import { cn } from '@/utils/cn'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -52,34 +51,32 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     }
 
     return (
-      <div className="flex min-h-screen items-center justify-center bg-canvas p-6">
-        <div className="w-full max-w-md rounded-card border border-line bg-surface p-6 text-center">
-          <span className="mx-auto flex size-10 items-center justify-center rounded-xl bg-brand text-sm font-semibold text-white">
-            {appConfig.logo}
-          </span>
-          <h1 className="mt-4 text-base font-semibold text-ink">页面出现了意外错误</h1>
-          <p className="mt-1.5 text-[13px] leading-6 text-ink-soft">
-            你的聊天记录仍然安全地保存在本机浏览器中，重新加载不会丢失。
-          </p>
+      <div className="h-full overflow-y-auto bg-canvas p-6">
+        <div className="flex min-h-full items-center justify-center">
+          <div className="w-full max-w-md rounded-card border border-line bg-surface p-6 text-center">
+            <span className="mx-auto flex size-10 items-center justify-center rounded-xl bg-brand text-sm font-semibold text-white">
+              {appConfig.logo}
+            </span>
+            <h1 className="mt-4 text-base font-semibold text-ink">页面出现了意外错误</h1>
+            <p className="mt-1.5 text-[13px] leading-6 text-ink-soft">
+              你的聊天记录仍然安全地保存在本机浏览器中，重新加载不会丢失。
+            </p>
 
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="mt-4 rounded-lg bg-brand px-4 py-2 text-[13px] font-medium text-white transition-colors hover:bg-brand-hover"
-          >
-            重新加载页面
-          </button>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-lg bg-brand px-4 py-2 text-[13px] font-medium text-white transition-colors hover:bg-brand-hover"
+            >
+              重新加载页面
+            </button>
 
-          <details
-            className={cn(
-              'mt-4 rounded-lg border border-line bg-canvas px-3 py-2 text-left text-[12px] text-ink-soft',
-            )}
-          >
-            <summary className="cursor-pointer select-none">查看技术详情</summary>
-            <pre className="mt-1.5 font-mono text-[11px] leading-5 whitespace-pre-wrap break-all text-ink-muted">
-              {error.message}
-            </pre>
-          </details>
+            <details className="mt-4 rounded-lg border border-line bg-canvas px-3 py-2 text-left text-[12px] text-ink-soft">
+              <summary className="cursor-pointer select-none">查看技术详情</summary>
+              <pre className="mt-1.5 font-mono text-[11px] leading-5 whitespace-pre-wrap break-all text-ink-muted">
+                {error.message}
+              </pre>
+            </details>
+          </div>
         </div>
       </div>
     )

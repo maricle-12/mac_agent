@@ -36,14 +36,14 @@ export function Header({
   return (
     <header
       data-testid="header"
-      className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-3 sm:px-5"
+      className="header-safe flex shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-3 sm:px-5"
     >
       <div className="flex min-w-0 items-center gap-2">
         <button
           type="button"
           onClick={onOpenSidebar}
           aria-label="打开菜单"
-          className="rounded-lg p-2 text-ink-soft transition-colors hover:bg-canvas hover:text-ink md:hidden"
+          className="touch-friendly -ml-1 flex size-9 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-canvas hover:text-ink md:hidden"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" className="size-5" aria-hidden="true">
             <path d="M4 7h16M4 12h16M4 17h16" />

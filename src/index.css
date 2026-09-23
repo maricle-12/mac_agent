@@ -39,6 +39,16 @@
     height: 100%;
   }
 
+  /* 移动端：用动态视口高度，软键盘弹出时整个外壳跟着缩小，
+     输入框不会被键盘盖住（不支持 dvh 的浏览器回退到上面的 100%）。 */
+  @supports (height: 100dvh) {
+    html,
+    body,
+    #root {
+      height: 100dvh;
+    }
+  }
+
   body {
     margin: 0;
     background-color: var(--color-canvas);
@@ -46,18 +56,84 @@
     font-family: var(--font-sans);
     font-size: 15px;
     line-height: 1.6;
+    /* 应用自己管理滚动区域，禁止整页滚动与 iOS 橡皮筋 */
+    overflow: hidden;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    /* 防止 iOS 横屏时自动放大字号 */
+    -webkit-text-size-adjust: 100%;
   }
 
   button {
     font-family: inherit;
+    /* 去掉移动端 300ms 点击延迟与双击缩放 */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
 
   /* 细滚动条，贴近现代 SaaS 观感 */
   * {
     scrollbar-width: thin;
     scrollbar-color: #d4d4d8 transparent;
+  }
+}
+
+/* ============================================================
+   移动端适配
+   ============================================================ */
+
+/* 顶部栏：为刘海 / 状态栏留出安全区（非刘海设备 env() 为 0，不影响桌面端） */
+.header-safe {
+  height: calc(3.5rem + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* 底部输入区：为 iPhone 底部横条留出安全区 */
+.composer-safe {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+}
+
+/* 移动端抽屉：横屏刘海 */
+.drawer-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+/**
+ * 会话行上的「⋯」按钮。
+ *
+ * 默认常显；只有在「宽屏 + 有真实悬停能力」的桌面环境才收起来做悬停显示。
+ * 这里额外要求 min-width: 768px 是刻意的：手机上永远没有 hover，
+ * 不能把「能否操作会话」交给 hover 能力判断（不同浏览器/机型上报不一致），
+ * 窄屏一律常显，保证手机上一定能重命名或删除会话。
+ */
+.conversation-more {
+  opacity: 1;
+}
+
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  .conversation-more {
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .conversation-item:hover .conversation-more,
+  .conversation-more:focus-visible {
+    opacity: 1;
+  }
+}
+
+/* 点击目标尺寸一律按 ≥36px 设计（不依赖媒体查询，桌面端同样舒适） */
+
+/* 供脚本/测试判断当前是否被模拟为触屏环境 */
+@media (hover: none) {
+  :root {
+    --hover-capable: 0;
+  }
+}
+
+@media (hover: hover) {
+  :root {
+    --hover-capable: 1;
   }
 }
 

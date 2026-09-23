@@ -37,7 +37,7 @@ export function CodeBlock({ language, code }: CodeBlockProps) {
         <button
           type="button"
           onClick={handleCopy}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ink-muted transition-colors hover:bg-canvas hover:text-ink"
+          className="flex min-h-8 items-center gap-1 rounded px-2 py-1 text-[11px] text-ink-muted transition-colors hover:bg-canvas hover:text-ink"
         >
           {copied ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />}
           {copied ? '已复制' : '复制'}

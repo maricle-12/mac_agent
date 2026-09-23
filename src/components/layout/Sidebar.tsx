@@ -127,14 +127,14 @@ export function Sidebar({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="block w-full rounded-lg px-2 py-1.5 text-left text-[13px] text-ink-soft transition-colors hover:bg-white/70 hover:text-ink"
+          className="block min-h-9 w-full rounded-lg px-2 py-1.5 text-left text-[13px] text-ink-soft transition-colors hover:bg-white/70 hover:text-ink"
         >
           API 设置
         </button>
         <button
           type="button"
           onClick={onOpenAbout}
-          className="block w-full rounded-lg px-2 py-1.5 text-left text-[13px] text-ink-soft transition-colors hover:bg-white/70 hover:text-ink"
+          className="block min-h-9 w-full rounded-lg px-2 py-1.5 text-left text-[13px] text-ink-soft transition-colors hover:bg-white/70 hover:text-ink"
         >
           关于
         </button>

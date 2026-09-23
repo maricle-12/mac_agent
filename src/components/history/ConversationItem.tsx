@@ -59,7 +59,7 @@ export function ConversationItem({
   return (
     <div
       className={cn(
-        'group relative flex items-center gap-2 rounded-lg px-2 py-2 text-sm transition-colors',
+        'conversation-item group relative flex items-center gap-1.5 rounded-lg px-2 py-2 text-sm transition-colors',
         active ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft hover:bg-white/70 hover:text-ink',
       )}
     >
@@ -93,8 +93,8 @@ export function ConversationItem({
         onClick={openMenu}
         aria-label="更多操作"
         className={cn(
-          'shrink-0 rounded-md p-1 text-ink-muted transition-opacity hover:bg-canvas hover:text-ink',
-          menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+          'conversation-more flex size-9 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-canvas hover:text-ink',
+          menuOpen && 'bg-canvas text-ink',
         )}
       >
         <MoreHorizontalIcon className="size-4" />

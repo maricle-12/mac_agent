@@ -1266,21 +1266,95 @@ step('桌面布局验收：侧边栏 / 正文宽度 / 固定区 / 无横向溢�
   await sleep(300)
 })
 
-step('移动端：侧边栏折叠与抽屉', async (ctx) => {
-  await ctx.setViewport(390, 844, true)
-  await sleep(500)
+step('移动端适配：多机型 + 触屏可用性', async (ctx) => {
+  try {
+    await runMobileChecks(ctx)
+  } finally {
+    // 无论成功失败都要还原视口与媒体特性，
+    // 否则后续用例会在「手机视口 + 抽屉打开」的状态下运行，
+    // 导致桌面侧边栏不可见、会话数量统计为 0，产生连锁误报。
+    await ctx.setMediaFeatures([])
+    await ctx.setViewport(1440, 900, false)
+    await sleep(400)
+    await ctx.eval(`
+      const overlay = $$('div').find((el) => el.className.includes('bg-ink/30'));
+      if (overlay) overlay.click();
+      return true;
+    `)
+    await sleep(300)
+  }
+})
 
-  const collapsed = await ctx.eval(`
-    const sidebar = $$('div').find((el) => el.className.includes('md:flex') && el.className.includes('w-64'));
-    return {
-      hidden: sidebar ? getComputedStyle(sidebar).display === 'none' : null,
-      menuButton: Boolean($('button[aria-label="打开菜单"]')),
-      bodyOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
-    };
-  `)
-  ctx.assert(collapsed.hidden === true, '移动端侧边栏未折叠')
-  ctx.assert(collapsed.menuButton, '移动端缺少菜单按钮')
-  ctx.assert(collapsed.bodyOverflow, '移动端出现横向溢出')
+async function runMobileChecks(ctx) {
+  // 手机（<768px 侧边栏应折叠）与平板（>=768px 侧边栏应常驻）
+  const devices = [
+    { name: '360×640 小屏手机', width: 360, height: 640, phone: true },
+    { name: '390×844 iPhone 14', width: 390, height: 844, phone: true },
+    { name: '414×896 大屏手机', width: 414, height: 896, phone: true },
+    { name: '768×1024 平板', width: 768, height: 1024, phone: false },
+  ]
+
+  for (const device of devices) {
+    await ctx.setViewport(device.width, device.height, device.phone)
+    await sleep(400)
+
+    const metrics = await ctx.eval(`
+      const rect = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      return {
+        sidebar: rect('[data-testid="sidebar-desktop"]'),
+        composer: rect('[data-testid="composer"]'),
+        header: rect('[data-testid="header"]'),
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+        overflowX: document.documentElement.scrollWidth - window.innerWidth,
+        bodyOverflow: getComputedStyle(document.body).overflow,
+        rootHeight: Math.round(document.getElementById('root').getBoundingClientRect().height),
+      };
+    `)
+
+    const label = device.name
+    ctx.assert(metrics.overflowX <= 1, `${label}: 出现横向溢出 ${metrics.overflowX}px`)
+    ctx.assert(
+      metrics.composer && metrics.composer.y + metrics.composer.h <= metrics.viewport.h + 1,
+      `${label}: 输入区超出视口底部（可能被软键盘遮挡）`,
+    )
+    ctx.assert(
+      metrics.header && metrics.header.y >= 0 && metrics.header.h >= 55,
+      `${label}: 顶部栏尺寸异常 ${JSON.stringify(metrics.header)}`,
+    )
+    ctx.assert(metrics.bodyOverflow === 'hidden', `${label}: 页面整页滚动未被禁止`)
+    ctx.assert(
+      Math.abs(metrics.rootHeight - metrics.viewport.h) <= 2,
+      `${label}: 应用外壳高度与视口不一致（${metrics.rootHeight} vs ${metrics.viewport.h}）`,
+    )
+
+    if (device.phone) {
+      ctx.assert(
+        !metrics.sidebar || metrics.sidebar.w === 0,
+        `${label}: 手机端侧边栏应折叠`,
+      )
+    } else {
+      ctx.assert(
+        metrics.sidebar && metrics.sidebar.w >= 240,
+        `${label}: 平板端侧边栏应常驻（实际宽 ${metrics.sidebar?.w}）`,
+      )
+    }
+  }
+
+  // 回到手机尺寸，验证抽屉与点击目标尺寸
+  await ctx.setViewport(390, 844, true)
+  await sleep(400)
+
+  // 先模拟触屏环境，再检查点击目标尺寸（触屏下按钮会被放大）
+  await ctx.setMediaFeatures([
+    { name: 'hover', value: 'none' },
+    { name: 'pointer', value: 'coarse' },
+  ])
+  await sleep(350)
 
   await ctx.eval(`return $('button[aria-label="打开菜单"]').click();`)
   await sleep(400)
@@ -1289,25 +1363,46 @@ step('移动端：侧边栏折叠与抽屉', async (ctx) => {
     '抽屉打开后侧边栏内容不可见',
   )
 
-  // 关闭抽屉并恢复桌面视口。
-  // 注意：抽屉关闭后仍留在 DOM 中（只是 md:hidden），
-  // 如果不关掉，后面统计会话数量会把同一个会话数两遍。
-  await ctx.eval(`
-    const overlay = $$('div').find((el) => el.className.includes('bg-ink/30'));
-    if (overlay) overlay.click();
-    return true;
+  const drawerTargets = await ctx.eval(`
+    const drawer = $$('div').find((el) => el.className.includes('drawer-safe'));
+    if (!drawer) return null;
+    const buttons = [...drawer.querySelectorAll('button')].filter((el) => el.getClientRects().length > 0);
+    const tooSmall = buttons
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 12),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        };
+      })
+      .filter((item) => item.h < 36 || item.w < 36);
+    return { count: buttons.length, tooSmall };
   `)
-  await sleep(300)
-
-  await ctx.setViewport(1440, 900, false)
-  await sleep(300)
+  ctx.assert(drawerTargets && drawerTargets.count > 0, '抽屉内没有可点击元素')
   ctx.assert(
-    await ctx.eval(
-      `return $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length === $$('button[aria-label="更多操作"]').length;`,
-    ),
-    '抽屉未真正关闭（DOM 中仍有两份会话列表）',
+    drawerTargets.tooSmall.length === 0,
+    `抽屉内有过小的点击目标: ${JSON.stringify(drawerTargets.tooSmall)}`,
   )
-})
+
+  // 触屏下「⋯」按钮必须常显（否则手机上根本点不到）
+  const touchMore = await ctx.eval(`
+    const more = $$('button[aria-label="更多操作"]').filter((el) => visible(el))[0];
+    if (!more) return null;
+    const style = getComputedStyle(more);
+    const rect = more.getBoundingClientRect();
+    return { opacity: Number(style.opacity), w: Math.round(rect.width), h: Math.round(rect.height) };
+  `)
+  ctx.assert(touchMore, '触屏环境下找不到会话的 ⋯ 按钮')
+  ctx.assert(
+    touchMore.opacity === 1,
+    `触屏设备上「⋯」按钮不可见（opacity=${touchMore.opacity}），手机上无法重命名或删除会话`,
+  )
+  ctx.assert(
+    touchMore.h >= 36 && touchMore.w >= 36,
+    `触屏设备上「⋯」按钮过小: ${touchMore.w}×${touchMore.h}`,
+  )
+}
 
 step('删除对话：⋯ 菜单 → 确认弹窗 → 取消 / 删除后刷新不复活', async (ctx) => {
   const target = '什么是分类与整理'
@@ -1366,6 +1461,7 @@ step('删除对话：⋯ 菜单 → 确认弹窗 → 取消 / 删除后刷新不
       count: $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length,
       exists: document.body.innerText.includes('${target}'),
       rows,
+      pageText: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 200),
     };
   `)
   ctx.assert(!afterReload.exists, '删除后刷新，会话又出现了（IndexedDB 未真正删除）')
@@ -1373,7 +1469,8 @@ step('删除对话：⋯ 菜单 → 确认弹窗 → 取消 / 删除后刷新不
     afterReload.count === beforeCount - 1,
     `删除后会话数量不正确: 界面 ${beforeCount} → 刷新后 ${afterReload.count}
       IndexedDB(删除前): ${dbBefore.count} 条 [${dbBefore.rows.join(' | ')}]
-      刷新后剩余: [${afterReload.rows.join(' | ')}]`,
+      刷新后剩余: [${afterReload.rows.join(' | ')}]
+      刷新后页面文本: ${afterReload.pageText}`,
   )
 })
 
@@ -1651,6 +1748,10 @@ function createContext(ws, sessionId, pageUrl) {
         { width, height, deviceScaleFactor: 1, mobile },
         sessionId,
       )
+    },
+    /** 模拟媒体特性，例如把环境伪装成触屏（hover: none / pointer: coarse） */
+    async setMediaFeatures(features) {
+      await send(ws, 'Emulation.setEmulatedMedia', { features }, sessionId)
     },
     assert(condition, message) {
       if (!condition) throw new Error(message)
