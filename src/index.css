@@ -1,0 +1,62 @@
+@import 'tailwindcss';
+
+/* ============================================================
+   设计令牌（Tailwind v4 CSS-first 配置）
+   修改这里即可整体调整品牌视觉，无需改动组件代码。
+   ============================================================ */
+@theme {
+  --font-sans:
+    'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  /* 背景层次 */
+  --color-canvas: #f7f7f8; /* 页面最底层背景 */
+  --color-sidebar: #f1f1f3; /* 左侧栏（略深） */
+  --color-surface: #ffffff; /* 主聊天区 / 卡片 */
+  --color-line: #e6e6ea; /* 边框 */
+  --color-line-soft: #f0f0f3;
+
+  /* 文字 */
+  --color-ink: #1f2024; /* 主文字 */
+  --color-ink-soft: #5f6368; /* 次要文字 */
+  --color-ink-muted: #9aa0a6; /* 弱化文字 */
+
+  /* 品牌与语义色 */
+  --color-brand: #3b6ef6;
+  --color-brand-hover: #2f5ee0;
+  --color-brand-soft: #eef3ff;
+  --color-success: #1a9e5c;
+  --color-danger: #d93a3a;
+  --color-warning: #b7791f;
+
+  --radius-card: 0.75rem;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button {
+    font-family: inherit;
+  }
+
+  /* 细滚动条，贴近现代 SaaS 观感 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #d4d4d8 transparent;
+  }
+}
