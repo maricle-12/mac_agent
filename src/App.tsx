@@ -13,7 +13,6 @@ import { useApiSettings } from '@/hooks/useApiSettings'
 import { useChat } from '@/hooks/useChat'
 import { useConversations } from '@/hooks/useConversations'
 import { loadPreferences, savePreferences } from '@/services/storage'
-import type { ApiConnectionStatus } from '@/types/chat'
 import type { AgentMode, Conversation } from '@/types/conversation'
 import type { ApiSettings } from '@/types/settings'
 
@@ -22,7 +21,7 @@ const modeLabel: Record<AgentMode, string> = { teacher: '教师模式', student:
 /**
  * 组装层：只负责状态编排与弹窗调度，具体 UI 与业务逻辑在各自的组件 / Hook 中。
  *
- * 阶段 3：API 设置与 Key 已接入浏览器本地存储（sessionStorage / localStorage 分离）。
+ * 阶段 5：已接入 Worker 转发与「测试连接」（非流式）。
  * 阶段 7 接入真实流式回答，阶段 9 / 10 接入 IndexedDB 会话持久化。
  */
 export default function App() {
@@ -45,8 +44,6 @@ export default function App() {
   useEffect(() => {
     savePreferences({ mode })
   }, [mode])
-
-  const apiStatus: ApiConnectionStatus = api.configured ? 'unknown' : 'unconfigured'
 
   const switchMode = useCallback(
     (next: AgentMode) => {
@@ -123,7 +120,7 @@ export default function App() {
           <Header
             mode={mode}
             modelName={api.settings.model}
-            apiStatus={apiStatus}
+            apiStatus={api.status}
             onOpenSidebar={() => setSidebarOpen(true)}
             onOpenSettings={() => setSettingsOpen(true)}
           />
@@ -151,6 +148,7 @@ export default function App() {
         keyStorage={api.keyStorage}
         onClose={() => setSettingsOpen(false)}
         onSave={handleSaveSettings}
+        onTest={api.test}
         onClearApiKey={() => setClearApiOpen(true)}
       />
 

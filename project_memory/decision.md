@@ -119,3 +119,19 @@ Decision: 流式透传时只复制 `Content-Type`，不复制 `Content-Encoding`
 Reason: Workers 的 `fetch` 已经自动解压上游 body，若同时透传 `Content-Encoding`，浏览器会尝试二次解压导致响应损坏。
 
 Impact: 后续若改为直接转发原始字节，必须重新审视这套头处理逻辑。
+
+## 前端只通过 chatApi.ts 访问模型
+
+Decision: 所有对 Worker 的请求都必须经过 `src/services/chatApi.ts`；错误统一转成 `ApiRequestError`，UI 只展示 `message`，原始信息进 `detail`。
+
+Reason: 保证错误文案一致、Key 处理一致、未来接入流式与重试时只有一处需要改。
+
+Impact: 不要在任何组件里直接 `fetch(apiConfig.endpoint)`；新增接口能力（流式、标题生成、未来的 Embedding）都先加到 chatApi。
+
+## 自动化检查中的「预期失败请求」显式声明
+
+Decision: `ui-check.mjs` 中会故意产生 4xx 的用例必须调用 `ctx.tolerateNetworkError()` 声明；harness 按计数容忍，预期外的网络错误仍然判失败。需要外部依赖（Worker / 真实端点）的用例用 `ctx.skip()` 显式跳过并打印原因。
+
+Reason: 若直接忽略所有 `network:` 日志，会漏掉真正的基础设施故障；若不做容忍，则每次正常跑错误分支都会污染结果。同理，生产构建在阶段 14 前端点仍是占位符，把这种情况报成 FAIL 会掩盖真实问题。
+
+Impact: 新增涉及失败分支或外部依赖的用例时，必须显式声明容忍或跳过，不允许放宽容忍范围。

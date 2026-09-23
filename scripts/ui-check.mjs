@@ -62,6 +62,8 @@ const pending = new Map()
 const consoleErrors = []
 const exceptions = []
 const logErrors = []
+/** 有意触发的 4xx 请求会让浏览器记录一条 network 日志，这里单独容忍 */
+let toleratedNetworkErrors = 0
 
 function send(ws, method, params = {}, sessionId) {
   const id = nextId++
@@ -143,9 +145,26 @@ const DOM_HELPERS = `
   const visible = (el) => Boolean(el && el.getClientRects().length > 0);
 `
 
+/** 用例主动跳过（例如当前构建尚未配置 Worker 端点） */
+class SkipError extends Error {}
+
 const steps = []
-function step(name, fn) {
-  steps.push({ name, fn })
+function step(name, fn, options = {}) {
+  steps.push({ name, fn, requiresWorker: options.requiresWorker === true })
+}
+
+/** Worker 地址：默认本地 wrangler dev，可用 WORKER_URL 覆盖 */
+const WORKER_URL = (process.env.WORKER_URL ?? 'http://127.0.0.1:8787').replace(/\/+$/, '')
+
+async function probeWorker() {
+  try {
+    const response = await fetch(`${WORKER_URL}/api/health`, {
+      signal: AbortSignal.timeout(3000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
 }
 
 // ---------------------------------------------------------------- 测试场景
@@ -332,6 +351,121 @@ step('API 设置弹窗：字段与隐私提示', async (ctx) => {
   ctx.assert(after.status, '配置 Key 后顶部状态未更新')
   ctx.assert(!after.guide, '配置 Key 后仍显示首次使用引导')
 })
+
+step(
+  '测试连接：失败路径给出友好提示且不泄露 Key',
+  async (ctx) => {
+    const probeKey = 'sk-browser-leak-check-000000'
+    // 这次请求会被上游拒绝，浏览器必然记录一条 401 网络日志，属于预期
+    ctx.tolerateNetworkError()
+    await ctx.eval(`return clickText('设置');`)
+    await sleep(300)
+    await ctx.eval(`return setValue('#api-key', '${probeKey}');`)
+    await sleep(200)
+    await ctx.eval(`return clickText('测试连接');`)
+    await ctx.waitFor(
+      `return document.body.innerText.includes('连接成功') || document.body.innerText.includes('API Key 不正确') || document.body.innerText.includes('尚未配置模型转发地址');`,
+      25000,
+    )
+
+    // 生产构建在 `.env.production` 仍为占位符时会走到这里，属于预期状态
+    if (await ctx.eval(`return document.body.innerText.includes('尚未配置模型转发地址');`)) {
+      ctx.endpointConfigured = false
+      ctx.skip('当前构建的 VITE_API_ENDPOINT 仍是占位符，无法联调 Worker（阶段 14 完成部署后生效）')
+    }
+    ctx.endpointConfigured = true
+
+    const info = await ctx.eval(`
+      // 输入框自身的 value 就是用户刚输入的 Key，不算泄露；
+      // 这里把它临时摘掉，只检查页面其它位置有没有出现完整 Key。
+      const input = $('#api-key');
+      const attr = input ? input.getAttribute('value') : null;
+      if (input) input.removeAttribute('value');
+      const html = document.body.innerHTML;
+      if (input && attr !== null) input.setAttribute('value', attr);
+      return {
+        failed: document.body.innerText.includes('API Key 不正确'),
+        details: document.body.innerText.includes('查看技术详情'),
+        hint: document.body.innerText.includes('常见原因'),
+        leaked: html.includes('${probeKey}'),
+        inputAttrHasKey: Boolean(attr && attr.includes('${probeKey}')),
+      };
+    `)
+    ctx.assert(info.failed, '假 Key 应提示「API Key 不正确」')
+    ctx.assert(info.details, '失败时应提供「查看技术详情」')
+    ctx.assert(info.hint, '失败时应给出常见原因提示')
+    ctx.assert(!info.leaked, '页面非输入框位置出现了完整 API Key（泄露）')
+
+    await ctx.eval(`return clickExact('取消');`)
+    await sleep(250)
+  },
+  { requiresWorker: true },
+)
+
+step(
+  '测试连接：成功分支界面渲染（stub 上游响应）',
+  async (ctx) => {
+    if (ctx.endpointConfigured === false) {
+      ctx.skip('端点未配置，跳过成功分支界面验证')
+    }
+
+    // 用桩替身返回一条 OpenAI 兼容的成功响应，只验证成功分支的界面渲染
+    await ctx.eval(`
+      window.__origFetch = window.fetch;
+      window.fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.includes('/api/chat')) {
+          return new Response(JSON.stringify({
+            id: 'stub',
+            object: 'chat.completion',
+            model: 'deepseek-chat',
+            choices: [{ index: 0, message: { role: 'assistant', content: '你好！我是你的教学助手。' }, finish_reason: 'stop' }],
+            usage: { total_tokens: 11 },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return window.__origFetch(input, init);
+      };
+      return true;
+    `)
+
+    await ctx.eval(`return clickText('设置');`)
+    await sleep(300)
+    await ctx.eval(`return setValue('#api-key', 'sk-stub-success-key');`)
+    await sleep(200)
+    await ctx.eval(`return clickText('测试连接');`)
+    await sleep(800)
+
+    const info = await ctx.eval(`
+      return {
+        success: document.body.innerText.includes('连接成功'),
+        preview: document.body.innerText.includes('模型回复：'),
+        summary: document.body.innerText.includes('查看技术详情'),
+      };
+    `)
+
+    // 展开「查看技术详情」后应能看到 HTTP 状态等信息（闭合的 details 内容不在 innerText 中）
+    const expanded = await ctx.eval(`
+      const summary = $$('summary').find((el) => el.textContent.includes('查看技术详情'));
+      if (!summary) return false;
+      summary.click();
+      return true;
+    `)
+
+    await ctx.eval(`window.fetch = window.__origFetch; delete window.__origFetch; return true;`)
+
+    ctx.assert(info.success, '成功时未显示「连接成功」')
+    ctx.assert(info.preview, '成功时未展示模型回复预览')
+    ctx.assert(info.summary, '成功时未提供「查看技术详情」')
+    ctx.assert(expanded, '未能展开「查看技术详情」')
+    ctx.assert(
+      await ctx.eval(`return document.body.innerText.includes('HTTP 200');`),
+      '技术详情中未显示 HTTP 状态',
+    )
+
+    await ctx.eval(`return clickExact('取消');`)
+    await sleep(250)
+  },
+)
 
 step('API Key 默认只存 sessionStorage', async (ctx) => {
   await ctx.eval(`return clickText('设置');`)
@@ -752,6 +886,16 @@ function createContext(ws, sessionId, pageUrl) {
     assert(condition, message) {
       if (!condition) throw new Error(message)
     },
+    /** 声明本次用例会故意产生一次 4xx 网络日志 */
+    tolerateNetworkError() {
+      toleratedNetworkErrors += 1
+    },
+    /** 跳过当前用例 */
+    skip(reason) {
+      throw new SkipError(reason)
+    },
+    /** 端点是否已配置为真实 Worker（生产构建在阶段 14 前仍是占位符） */
+    endpointConfigured: undefined,
   }
 }
 
@@ -803,13 +947,23 @@ try {
 
   const ctx = createContext(ws, sessionId, url)
 
-  console.log(`=== UI 自动化检查 ===\nURL: ${url}\n`)
+  const workerAvailable = await probeWorker()
+
+  console.log(`=== UI 自动化检查 ===\nURL: ${url}\nWorker: ${WORKER_URL} ${workerAvailable ? '（可用）' : '（未运行，相关用例将跳过）'}\n`)
 
   for (const item of steps) {
+    if (item.requiresWorker && !workerAvailable) {
+      console.log(`SKIP  ${item.name}`)
+      continue
+    }
     try {
       await item.fn(ctx)
       console.log(`PASS  ${item.name}`)
     } catch (error) {
+      if (error instanceof SkipError) {
+        console.log(`SKIP  ${item.name}\n      ${error.message}`)
+        continue
+      }
       failures += 1
       console.log(`FAIL  ${item.name}\n      ${error.message}`)
     }
@@ -822,7 +976,17 @@ try {
   console.log('--- 浏览器日志错误 ---')
   console.log(logErrors.length ? logErrors.join('\n') : '（无）')
 
-  if (consoleErrors.length || exceptions.length || logErrors.length) failures += 1
+  const networkErrors = logErrors.filter((item) => item.startsWith('network:'))
+  const otherLogErrors = logErrors.filter((item) => !item.startsWith('network:'))
+  const unexpectedNetworkErrors = Math.max(0, networkErrors.length - toleratedNetworkErrors)
+
+  if (unexpectedNetworkErrors > 0) {
+    console.log(`\n⚠️ 出现 ${unexpectedNetworkErrors} 条预期外的网络错误日志`)
+  }
+
+  if (consoleErrors.length || exceptions.length || otherLogErrors.length || unexpectedNetworkErrors) {
+    failures += 1
+  }
 
   console.log(`\n结果: ${failures === 0 ? '全部通过' : `${failures} 项失败`}`)
   process.exitCode = failures === 0 ? 0 : 1

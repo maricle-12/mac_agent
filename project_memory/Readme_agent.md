@@ -45,7 +45,7 @@ demo/
 │  ├─ utils/                 # ✅ cn / id / clipboard / time / title / markdown
 │  ├─ prompts/               # ⏳ 阶段 8：教师 / 学生 System Prompt 与 getSystemPrompt()
 │  ├─ db/                    # ⏳ 阶段 9：IndexedDB 封装（idb）
-│  ├─ services/              # ✅ storage（Key 与偏好）／⏳ 阶段 7：chatApi（SSE 解析）
+│  ├─ services/              # ✅ storage（Key 与偏好）、chatApi（Worker 调用与错误映射）
 │  ├─ hooks/                 # ✅ useConversations / useChat / useApiSettings
 │  ├─ mocks/                 # ✅ 阶段 2 临时模拟数据（阶段 7 / 9 后删除）
 │  ├─ components/            # ✅ layout / chat / settings / history / common
@@ -85,10 +85,18 @@ demo/
 ## 验证手段
 
 - `npm run build`：`tsc -b` + `vite build`，必须零类型错误。
-- `npm run check:ui`：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
-  三档桌面分辨率布局、移动端抽屉，并汇总 console 错误与未捕获异常。
+- `npm run check:ui`（19 项）：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
+  存储行为、测试连接错误路径（真实打到 DeepSeek）、三档桌面分辨率布局、移动端抽屉，
+  并汇总 console 错误 / 未捕获异常 / 预期外的网络错误。
+- `cd worker && npm run check`（38 项）：Worker 路由、CORS、请求校验、14 例 SSRF 防护、
+  真实上游转发与错误映射、密钥不泄露。
 - `node scripts/screenshot.mjs`：生成桌面 / 空状态 / 设置弹窗 / 移动端截图。
 - 当前模型不支持读取图片，视觉验收需依靠 `ui-check.mjs` 的数值断言 + 用户查看截图。
+
+## 联调状态
+
+- 已用真实网络验证：**假 Key 端到端**（浏览器 → Worker → api.deepseek.com → 401 → 中文友好提示）。
+- 未验证：**真实 Key 的成功路径**（环境无可用 Key）。需要用户在浏览器里自测或提供 Key。
 
 ## 关键约束（不可违反）
 

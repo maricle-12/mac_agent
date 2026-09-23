@@ -200,11 +200,18 @@ node scripts/ui-check.mjs http://localhost:4173/   # 也可以检查生产预览
 node scripts/screenshot.mjs http://localhost:5173/
 ```
 
-`ui-check.mjs` 会检查 17 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
+`ui-check.mjs` 会检查 19 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
 修改 UI 后建议先跑一遍，能第一时间发现渲染或交互回归。
 
 其中包含**本地存储行为验证**：未勾选「记住此设备」时清空 `sessionStorage` 后 Key 必须消失；
 勾选后必须跨会话保留；「清除 API 配置」后必须两处都清干净。
+
+以及**真实链路验证**：会先用一个假 Key 走一遍 `浏览器 → Worker → DeepSeek`，
+断言错误提示是中文友好文案、且页面上不出现完整 Key。
+（需要 Worker 正在运行；未运行时这些用例自动跳过。）
+
+> 生产构建在 `.env.production` 仍为占位符时，依赖 Worker 的用例会自动标记为 `SKIP`
+> 而不是失败 —— 这是预期状态，阶段 14 部署完 Worker 并填好地址后即会正常执行。
 
 > **本地完整链路**：`localhost 页面 → localhost Worker → DeepSeek`，分两个终端启动：
 
@@ -319,6 +326,17 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 
 架构上保留 **OpenAI-Compatible API** 支持：未来只需在 `src/config/api.ts` 增加 Provider、在 Worker 白名单中加入对应域名即可。
 
+### 「测试连接」行为
+
+点击后用**当前表单里的值**（不必先保存）发一次极小的非流式请求（一条 `你好`）：
+
+- 成功 → 绿色「连接成功」，并展示模型的实际回复片段与消耗 token 数。
+- 失败 → 红色友好提示（API Key 不正确 / 余额不足 / 请求过于频繁 / 模型不存在 / 无法连接…），
+  并附「查看技术详情」折叠区展示脱敏后的原始信息。
+- 表单一旦被修改，上一次的测试结论会自动清空，避免误导。
+
+顶部栏的 API 状态会同步为：`未配置` / `待验证` / `检测中` / `已连接` / `连接失败`。
+
 ---
 
 ## 10. 开发路线图（14 个阶段）
@@ -327,9 +345,10 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 | --- | --- | --- |
 | 1 | 项目骨架，`npm run dev` 可运行 | ✅ 已完成 |
 | 2 | 完整静态 UI（模拟消息） | ✅ 已完成 |
-| 3 | API 设置（Key 输入 / 保存 / 测试连接） | ✅ 已完成（Key 存储与设置持久化） |
+| 3 | API 设置（Key 输入 / 保存 / 测试连接） | ✅ 已完成 |
 | 4 | 建立 Cloudflare Worker | ✅ 已完成 |
-| 5 | 打通 DeepSeek 非流式请求 | ⬜ |
+| 5 | 打通 DeepSeek 非流式请求 | ✅ 已完成（真实成功路径需真实 Key 才能验证） |
+| 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 7 | 网页接入 Streaming + 停止生成 | ⬜ |
 | 8 | 教师 / 学生 System Prompt | ⬜ |
@@ -526,3 +545,14 @@ Worker 出于 SSRF 防护只允许白名单内的 API 地址。默认只允许 `
 - 首次使用需要登录：`npx wrangler login`（仅部署需要，本地开发不需要）。
 - 8787 端口被占用：改 `wrangler.toml` 的 `[dev] port`，并同步改 `.env.development`。
 - 提示 `compatibility_date` 过新：把 `wrangler.toml` 里的日期改成不晚于今天的日期。
+
+### 12.13 测试连接提示「尚未配置模型转发地址」
+
+说明当前构建里的 `VITE_API_ENDPOINT` 还是占位符（`https://REPLACE-WITH-YOUR-WORKER...`）。
+按第 6 章跑本地开发（会自动读取 `.env.development`），或按第 11 章部署 Worker 并修改
+`.env.production` 后重新构建。
+
+### 12.14 测试连接成功，但聊天区还是模拟回答
+
+阶段 5 只打通了「测试连接（非流式）」。聊天回答的真实流式输出在阶段 7 接入，
+在那之前聊天区显示的仍是阶段 2 的模拟回答（顶部带标注）。

@@ -4,6 +4,7 @@ import { Button } from '@/components/common/Button'
 import { EyeIcon, EyeOffIcon, InfoIcon } from '@/components/common/icons'
 import { Modal } from '@/components/common/Modal'
 import { apiConfig, apiProviders } from '@/config/api'
+import type { TestConnectionResult } from '@/services/chatApi'
 import { cn } from '@/utils/cn'
 import type { ApiKeyStorage, ApiSettings } from '@/types/settings'
 
@@ -13,10 +14,10 @@ export interface ApiSettingsModalProps {
   apiKey: string
   /** API Key 当前的存储位置，用于如实告知用户 */
   keyStorage: ApiKeyStorage
-  /** 测试连接是否可用（Worker 未部署时为 false） */
-  testEnabled?: boolean
   onClose: () => void
   onSave: (settings: ApiSettings, apiKey: string) => void
+  /** 测试连接：用当前表单值发一次极小请求，返回结果供本弹窗展示 */
+  onTest: (settings: ApiSettings, apiKey: string) => Promise<TestConnectionResult>
   onClearApiKey: () => void
 }
 
@@ -43,14 +44,16 @@ export function ApiSettingsModal({
   settings,
   apiKey,
   keyStorage,
-  testEnabled = false,
   onClose,
   onSave,
+  onTest,
   onClearApiKey,
 }: ApiSettingsModalProps) {
   const [form, setForm] = useState<ApiSettings>(settings)
   const [key, setKey] = useState(apiKey)
   const [showKey, setShowKey] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null)
 
   // 每次打开时用最新的外部设置重置表单
   useEffect(() => {
@@ -58,9 +61,36 @@ export function ApiSettingsModal({
     setForm(settings)
     setKey(apiKey)
     setShowKey(false)
+    setTestResult(null)
   }, [open, settings, apiKey])
 
+  // 表单被改动后，之前的测试结论不再可信
+  useEffect(() => {
+    setTestResult(null)
+  }, [form, key])
+
   const provider = apiProviders.find((item) => item.id === form.provider) ?? apiProviders[0]
+
+  const normalizedForm = (): ApiSettings => ({
+    ...form,
+    baseUrl: form.baseUrl.trim().replace(/\/+$/, ''),
+    model: form.model.trim(),
+  })
+
+  const canTest =
+    key.trim().length > 0 &&
+    form.baseUrl.trim().length > 0 &&
+    form.model.trim().length > 0 &&
+    !testing
+
+  const handleTest = async () => {
+    setTesting(true)
+    try {
+      setTestResult(await onTest(normalizedForm(), key.trim()))
+    } finally {
+      setTesting(false)
+    }
+  }
 
   const handleProviderChange = (providerId: string) => {
     const next = apiProviders.find((item) => item.id === providerId)
@@ -69,7 +99,7 @@ export function ApiSettingsModal({
   }
 
   const handleSave = () => {
-    onSave({ ...form, baseUrl: form.baseUrl.trim().replace(/\/+$/, '') }, key.trim())
+    onSave(normalizedForm(), key.trim())
     onClose()
   }
 
@@ -212,13 +242,55 @@ export function ApiSettingsModal({
           <span className={storageHint[keyStorage].tone}>{storageHint[keyStorage].text}</span>
         </p>
 
-        <div className="flex items-center gap-2 border-t border-line-soft pt-3">
-          <Button variant="secondary" size="sm" disabled={!testEnabled}>
-            测试连接
-          </Button>
-          <span className="text-[12px] text-ink-muted">
-            {testEnabled ? '使用一次最小请求验证 Key 是否可用' : 'Worker 部署后启用（阶段 5）'}
-          </span>
+        <div className="border-t border-line-soft pt-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button variant="secondary" size="sm" disabled={!canTest} onClick={() => void handleTest()}>
+              {testing ? '测试中…' : '测试连接'}
+            </Button>
+
+            {!key.trim() ? (
+              <span className="text-[12px] text-ink-muted">请先填写 API Key</span>
+            ) : null}
+
+            {testResult ? (
+              <span
+                className={cn(
+                  'flex items-center gap-1.5 text-[12px]',
+                  testResult.ok ? 'text-success' : 'text-danger',
+                )}
+              >
+                <span
+                  className={cn(
+                    'size-1.5 rounded-full',
+                    testResult.ok ? 'bg-success' : 'bg-danger',
+                  )}
+                />
+                {testResult.message}
+              </span>
+            ) : null}
+          </div>
+
+          {testResult?.ok && testResult.preview ? (
+            <p className="mt-2 rounded-lg border border-success/20 bg-success/5 px-3 py-2 text-[12px] leading-5 text-ink-soft">
+              模型回复：{testResult.preview}
+            </p>
+          ) : null}
+
+          {testResult?.detail ? (
+            <details className="mt-2 rounded-lg border border-line bg-canvas px-3 py-2 text-[12px] text-ink-soft">
+              <summary className="cursor-pointer select-none">查看技术详情</summary>
+              <pre className="mt-1.5 font-mono text-[11px] leading-5 whitespace-pre-wrap break-all text-ink-muted">
+                {testResult.detail}
+              </pre>
+            </details>
+          ) : null}
+
+          {testResult && !testResult.ok ? (
+            <p className="mt-2 text-[12px] leading-5 text-ink-muted">
+              常见原因：API Key 填错或已失效、账户余额不足、模型名称不存在、Base URL 填错、
+              网络无法访问模型服务，或 Worker 未启动。
+            </p>
+          ) : null}
         </div>
       </div>
     </Modal>
