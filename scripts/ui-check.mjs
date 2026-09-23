@@ -118,6 +118,14 @@ const DOM_HELPERS = `
     el.click();
     return true;
   };
+  const byExact = (text, sel = 'button') =>
+    $$(sel).find((el) => (el.textContent || '').trim() === text);
+  const clickExact = (text, sel = 'button') => {
+    const el = byExact(text, sel);
+    if (!el) return false;
+    el.click();
+    return true;
+  };
   const setValue = (sel, value) => {
     const el = $(sel);
     if (!el) return false;
@@ -325,11 +333,266 @@ step('API 设置弹窗：字段与隐私提示', async (ctx) => {
   ctx.assert(!after.guide, '配置 Key 后仍显示首次使用引导')
 })
 
+step('API Key 默认只存 sessionStorage', async (ctx) => {
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  // 确保「记住此设备」未勾选
+  await ctx.eval(`
+    const box = $('input[type="checkbox"]');
+    if (box && box.checked) box.click();
+    return true;
+  `)
+  await ctx.eval(`return setValue('#api-key', 'sk-session-only-test-key');`)
+  await sleep(150)
+  await ctx.eval(`return clickText('保存');`)
+  await sleep(350)
+
+  // 重新打开设置：界面应如实告知 Key 只存在本次会话
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  ctx.assert(
+    await ctx.eval(`return $('[id="api-key"]')?.value === 'sk-session-only-test-key';`),
+    '重新打开设置后未回显已保存的 Key',
+  )
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('仅保存在本次会话中');`),
+    '未勾选记住时未提示「仅保存在本次会话中」',
+  )
+
+  await ctx.reload()
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('待验证');`),
+    '同一会话内刷新后 Key 丢失',
+  )
+
+  // 模拟关闭浏览器：清空 sessionStorage 后重新打开
+  await ctx.eval(`sessionStorage.clear(); return true;`)
+  await ctx.reload()
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('未配置');`),
+    '未勾选「记住此设备」时 Key 不应被持久保存',
+  )
+
+  // 新会话（空会话）应显示首次使用引导
+  await ctx.eval(`return clickText('新建对话');`)
+  await sleep(350)
+  const guide = await ctx.eval(`
+    return {
+      welcome: document.body.innerText.includes('欢迎使用'),
+      button: Boolean(byExact('配置 DeepSeek API')),
+      privacy: document.body.innerText.includes('不会保存到本应用的云端数据库'),
+    };
+  `)
+  ctx.assert(guide.welcome, '未配置 Key 时新会话未显示欢迎引导')
+  ctx.assert(guide.button, '欢迎引导中缺少「配置 DeepSeek API」按钮')
+  ctx.assert(guide.privacy, '欢迎引导中缺少隐私说明')
+
+  // 点击引导按钮应直接打开 API 设置
+  await ctx.eval(`return clickExact('配置 DeepSeek API');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return Boolean($('#api-key'));`),
+    '点击「配置 DeepSeek API」未打开设置弹窗',
+  )
+  await ctx.eval(`return clickExact('取消');`)
+  await sleep(250)
+})
+
+step('勾选「记住此设备」后写入 localStorage', async (ctx) => {
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  await ctx.eval(`return setValue('#api-key', 'sk-remembered-test-key');`)
+  await sleep(150)
+  await ctx.eval(`
+    const box = $('input[type="checkbox"]');
+    if (box && !box.checked) box.click();
+    return true;
+  `)
+  await sleep(150)
+  await ctx.eval(`return clickText('保存');`)
+  await sleep(350)
+
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('已保存在此设备上');`),
+    '勾选记住后未提示「已保存在此设备上」',
+  )
+
+  await ctx.reload()
+  // 模拟新会话：清空 sessionStorage 后 Key 仍应保留
+  await ctx.eval(`sessionStorage.clear(); return true;`)
+  await ctx.reload()
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('待验证');`),
+    '勾选「记住此设备」后 Key 未能跨会话保留',
+  )
+  ctx.assert(
+    await ctx.eval(`return !document.body.innerText.includes('欢迎使用');`),
+    '已记住 Key 时不应再显示首次使用引导',
+  )
+})
+
+step('非敏感设置（Base URL / Model）持久化', async (ctx) => {
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  await ctx.eval(`return setValue('#api-base-url', 'https://api.example.com/v1');`)
+  await ctx.eval(`return setValue('#api-model', 'deepseek-reasoner');`)
+  await sleep(150)
+  await ctx.eval(`return clickText('保存');`)
+  await sleep(350)
+
+  await ctx.reload()
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('deepseek-reasoner');`),
+    '刷新后顶部未显示保存的模型名',
+  )
+
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  ctx.assert(
+    (await ctx.eval(`return $('[id="api-base-url"]')?.value ?? '';`)) ===
+      'https://api.example.com/v1',
+    '刷新后 Base URL 未保留',
+  )
+  ctx.assert(
+    (await ctx.eval(`return $('[id="api-model"]')?.value ?? '';`)) === 'deepseek-reasoner',
+    '刷新后 Model 未保留',
+  )
+})
+
+step('清除 API 配置：Key 与设置一并清除', async (ctx) => {
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  await ctx.eval(`return clickText('清除 API 配置');`)
+  await sleep(300)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('确定清除 API 配置吗');`),
+    '未出现清除确认弹窗',
+  )
+  ctx.assert(
+    await ctx.eval(`return clickExact('清除');`),
+    '确认弹窗中找不到「清除」按钮',
+  )
+  await sleep(400)
+
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('未配置');`),
+    '清除后顶部仍显示已配置',
+  )
+  ctx.assert(
+    await ctx.eval(`return $('[id="api-key"]')?.value === '';`),
+    '清除后设置弹窗仍显示旧 Key',
+  )
+  ctx.assert(
+    (await ctx.eval(`return $('[id="api-model"]')?.value ?? '';`)) === 'deepseek-chat',
+    '清除后 Model 未恢复默认值',
+  )
+
+  await ctx.eval(`return clickExact('取消');`)
+  await sleep(250)
+  await ctx.eval(`sessionStorage.clear(); return true;`)
+  await ctx.reload()
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('未配置');`),
+    '清除后 Key 仍被持久保存（localStorage 未清干净）',
+  )
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('deepseek-chat');`),
+    '清除配置后未恢复默认模型',
+  )
+
+  // 空会话应重新显示首次使用引导
+  await ctx.eval(`return clickText('新建对话');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('欢迎使用');`),
+    '清除配置后新会话未重新显示欢迎引导',
+  )
+})
+
+step('模式偏好持久化到 localStorage', async (ctx) => {
+  // 先选中一个有内容的会话，切换模式应弹确认
+  await ctx.eval(`
+    const btn = $$('button').find((el) =>
+      (el.textContent || '').includes('二年级数学分类与整理'));
+    if (btn) btn.click();
+    return Boolean(btn);
+  `)
+  await sleep(400)
+
+  await ctx.eval(`return clickText('学生模式');`)
+  await sleep(400)
+  const confirmInfo = await ctx.eval(`
+    return {
+      shown: document.body.innerText.includes('切换模式将创建一个新对话'),
+      button: Boolean(byExact('新建学生模式对话')),
+    };
+  `)
+  ctx.assert(
+    confirmInfo.shown && confirmInfo.button,
+    '当前对话已有内容时切换模式应提示「切换模式将创建一个新对话」',
+  )
+
+  await ctx.eval(`return clickExact('新建学生模式对话');`)
+  await sleep(450)
+  ctx.assert(
+    await ctx.eval(`return $('h1')?.textContent === '学生模式';`),
+    '确认后未切换到学生模式',
+  )
+
+  await ctx.reload()
+  ctx.assert(
+    await ctx.eval(`return $('h1')?.textContent === '学生模式';`),
+    '刷新后未保留上次使用的模式',
+  )
+  // 刷新后应自动打开该模式下的会话（学生会话含 3 个块级公式，教师会话只有 1 个）
+  ctx.assert(
+    (await ctx.eval(`return $$('.md-body .katex-display').length;`)) >= 2,
+    '刷新后未打开与学生模式匹配的会话',
+  )
+
+  // 还原为教师模式
+  await ctx.eval(`return clickText('教师模式');`)
+  await sleep(400)
+  await ctx.eval(`
+    const btn = byExact('新建教师模式对话');
+    if (btn) btn.click();
+    return true;
+  `)
+  await sleep(400)
+  ctx.assert(
+    await ctx.eval(`return $('h1')?.textContent === '教师模式';`),
+    '未能切回教师模式',
+  )
+
+  // 空会话下切换模式不应弹确认，直接就地切换
+  await ctx.eval(`return clickText('新建对话');`)
+  await sleep(350)
+  await ctx.eval(`return clickText('学生模式');`)
+  await sleep(350)
+  const emptySwitch = await ctx.eval(`
+    return {
+      mode: $('h1')?.textContent ?? '',
+      noConfirm: !document.body.innerText.includes('切换模式将创建一个新对话'),
+    };
+  `)
+  ctx.assert(emptySwitch.mode === '学生模式', '空会话下切换模式失败')
+  ctx.assert(emptySwitch.noConfirm, '空会话下切换模式不应弹出确认')
+
+  await ctx.eval(`return clickText('教师模式');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return $('h1')?.textContent === '教师模式';`),
+    '未能切回教师模式',
+  )
+})
+
 step('删除对话：⋯ 菜单 → 确认弹窗 → 取消', async (ctx) => {
   const opened = await ctx.eval(`
     const more = $$('button[aria-label="更多操作"]').find((btn) => {
       const row = btn.closest('div');
-      return row && (row.textContent || '').includes('二年级数学课');
+      return row && (row.textContent || '').includes('一元一次方程练习');
     });
     if (!more) return false;
     more.click();
@@ -355,6 +618,15 @@ step('删除对话：⋯ 菜单 → 确认弹窗 → 取消', async (ctx) => {
 })
 
 step('桌面布局验收：侧边栏 / 正文宽度 / 固定区 / 无横向溢出', async (ctx) => {
+  // 先选中一个带消息的会话，确保渲染的是消息列表而不是空状态
+  await ctx.eval(`
+    const btn = $$('button').find((el) =>
+      (el.textContent || '').includes('二年级数学分类与整理'));
+    if (btn) btn.click();
+    return Boolean(btn);
+  `)
+  await sleep(400)
+
   for (const [width, height] of [
     [1920, 1080],
     [1440, 900],
@@ -451,7 +723,7 @@ step('移动端：侧边栏折叠与抽屉', async (ctx) => {
 
 // ---------------------------------------------------------------- 运行器
 
-function createContext(ws, sessionId) {
+function createContext(ws, sessionId, pageUrl) {
   return {
     async eval(expression) {
       return evaluate(ws, sessionId, DOM_HELPERS + expression)
@@ -463,6 +735,11 @@ function createContext(ws, sessionId) {
         await sleep(150)
       }
       throw new Error(`等待超时: ${expression.slice(0, 60)}`)
+    },
+    /** 重新加载页面，用于验证本地存储是否生效 */
+    async reload() {
+      await send(ws, 'Page.navigate', { url: pageUrl }, sessionId)
+      await sleep(1800)
     },
     async setViewport(width, height, mobile) {
       await send(
@@ -524,7 +801,7 @@ try {
   await send(ws, 'Page.navigate', { url }, sessionId)
   await sleep(2500)
 
-  const ctx = createContext(ws, sessionId)
+  const ctx = createContext(ws, sessionId, url)
 
   console.log(`=== UI 自动化检查 ===\nURL: ${url}\n`)
 

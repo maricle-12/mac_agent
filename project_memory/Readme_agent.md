@@ -45,14 +45,28 @@ demo/
 │  ├─ utils/                 # ✅ cn / id / clipboard / time / title / markdown
 │  ├─ prompts/               # ⏳ 阶段 8：教师 / 学生 System Prompt 与 getSystemPrompt()
 │  ├─ db/                    # ⏳ 阶段 9：IndexedDB 封装（idb）
-│  ├─ services/              # ⏳ 阶段 3 / 7：storage（Key 与偏好）、chatApi（SSE 解析）
-│  ├─ hooks/                 # ✅ useConversations / useChat（内存实现，接口已定型）
+│  ├─ services/              # ✅ storage（Key 与偏好）／⏳ 阶段 7：chatApi（SSE 解析）
+│  ├─ hooks/                 # ✅ useConversations / useChat / useApiSettings
 │  ├─ mocks/                 # ✅ 阶段 2 临时模拟数据（阶段 7 / 9 后删除）
 │  ├─ components/            # ✅ layout / chat / settings / history / common
 │  └─ App.tsx                # ✅ 组装层，只做状态编排与弹窗调度
 ├─ worker/                   # ⏳ 阶段 4：Cloudflare Worker（独立 package.json + wrangler.toml）
 └─ project_memory/           # 项目长期记忆
 ```
+
+## 本地存储约定
+
+统一在 `src/services/storage.ts`，键名前缀 `ai-edu-agent:`。
+
+| 数据 | 位置 | 键名 |
+| --- | --- | --- |
+| API Key（默认） | sessionStorage | `api-key:session` |
+| API Key（主动记住） | localStorage | `api-key:local` |
+| Provider / Base URL / Model | localStorage | `api-settings` |
+| 当前模式 | localStorage | `preferences` |
+| 聊天记录 | IndexedDB | 阶段 9 接入 |
+
+同一个 Key 只能存在于一个位置；`rememberApiKey` 由 Key 实际位置推导，不独立持久化。
 
 ## 验证手段
 

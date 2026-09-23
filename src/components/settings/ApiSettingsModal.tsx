@@ -4,12 +4,15 @@ import { Button } from '@/components/common/Button'
 import { EyeIcon, EyeOffIcon, InfoIcon } from '@/components/common/icons'
 import { Modal } from '@/components/common/Modal'
 import { apiConfig, apiProviders } from '@/config/api'
-import type { ApiSettings } from '@/types/settings'
+import { cn } from '@/utils/cn'
+import type { ApiKeyStorage, ApiSettings } from '@/types/settings'
 
 export interface ApiSettingsModalProps {
   open: boolean
   settings: ApiSettings
   apiKey: string
+  /** API Key 当前的存储位置，用于如实告知用户 */
+  keyStorage: ApiKeyStorage
   /** 测试连接是否可用（Worker 未部署时为 false） */
   testEnabled?: boolean
   onClose: () => void
@@ -21,10 +24,25 @@ const labelClass = 'block text-[13px] font-medium text-ink'
 const inputClass =
   'mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-brand/60'
 
+const storageHint: Record<ApiKeyStorage, { dot: string; text: string; tone: string }> = {
+  none: { dot: 'bg-ink-muted', text: '当前未保存 API Key。', tone: 'text-ink-soft' },
+  session: {
+    dot: 'bg-warning',
+    text: '当前仅保存在本次会话中，关闭浏览器后需要重新输入。',
+    tone: 'text-ink-soft',
+  },
+  local: {
+    dot: 'bg-success',
+    text: '当前已保存在此设备上，下次打开无需重新输入。',
+    tone: 'text-success',
+  },
+}
+
 export function ApiSettingsModal({
   open,
   settings,
   apiKey,
+  keyStorage,
   testEnabled = false,
   onClose,
   onSave,
@@ -70,7 +88,7 @@ export function ApiSettingsModal({
               className="mr-auto text-danger hover:bg-danger/5"
               onClick={onClearApiKey}
             >
-              清除 API Key
+              清除 API 配置
             </Button>
           ) : null}
           <Button variant="ghost" onClick={onClose}>
@@ -188,6 +206,11 @@ export function ApiSettingsModal({
             也不会写入源码或日志。所有聊天记录只保存在你自己的浏览器中。
           </p>
         </div>
+
+        <p className="flex items-center gap-2 text-[12px]">
+          <span className={cn('size-1.5 shrink-0 rounded-full', storageHint[keyStorage].dot)} />
+          <span className={storageHint[keyStorage].tone}>{storageHint[keyStorage].text}</span>
+        </p>
 
         <div className="flex items-center gap-2 border-t border-line-soft pt-3">
           <Button variant="secondary" size="sm" disabled={!testEnabled}>

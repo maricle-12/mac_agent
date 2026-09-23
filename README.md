@@ -194,8 +194,11 @@ node scripts/ui-check.mjs http://localhost:4173/   # 也可以检查生产预览
 node scripts/screenshot.mjs http://localhost:5173/
 ```
 
-`ui-check.mjs` 会检查 12 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
+`ui-check.mjs` 会检查 17 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
 修改 UI 后建议先跑一遍，能第一时间发现渲染或交互回归。
+
+其中包含**本地存储行为验证**：未勾选「记住此设备」时清空 `sessionStorage` 后 Key 必须消失；
+勾选后必须跨会话保留；「清除 API 配置」后必须两处都清干净。
 
 > **本地完整链路**：`localhost 页面 → localhost Worker → DeepSeek`。
 > Worker 将在**阶段 4** 创建，届时用 `npx wrangler dev`（或 `npm run dev`，在 `worker/` 目录内）启动在 `http://localhost:8787`，前端通过 `.env.development` 中的 `VITE_API_ENDPOINT` 连接它。
@@ -240,6 +243,25 @@ node scripts/screenshot.mjs http://localhost:5173/
 
 > API Key 仅用于调用您选择的模型服务。本应用不会将 API Key 保存到云端数据库。
 
+### 浏览器存储位置对照表
+
+所有键名统一使用 `ai-edu-agent:` 前缀（见 `src/services/storage.ts`）。
+
+| 数据 | 存储位置 | 键名 | 说明 |
+| --- | --- | --- | --- |
+| API Key（默认） | sessionStorage | `ai-edu-agent:api-key:session` | 关闭浏览器即失效 |
+| API Key（勾选记住后） | localStorage | `ai-edu-agent:api-key:local` | 仅用户主动勾选才写入 |
+| Provider / Base URL / Model | localStorage | `ai-edu-agent:api-settings` | 非敏感 |
+| 当前模式 | localStorage | `ai-edu-agent:preferences` | 非敏感 |
+| 聊天记录 | IndexedDB | `ai-edu-agent` 数据库 | 阶段 9 接入 |
+
+规则：
+
+- 同一个 API Key **只会存在于一个位置**：勾选记住就写 localStorage（并清掉 sessionStorage 中的副本），
+  否则只写 sessionStorage（并清掉 localStorage 中的副本）。
+- 设置弹窗底部会如实显示当前 Key 的存放位置（未保存 / 仅本次会话 / 已保存在此设备）。
+- 「清除 API 配置」会把两个位置中的 Key 一并删除，并把 Base URL / Model 恢复默认值。
+
 ---
 
 ## 9. 模型设置项
@@ -261,6 +283,7 @@ node scripts/screenshot.mjs http://localhost:5173/
 | --- | --- | --- |
 | 1 | 项目骨架，`npm run dev` 可运行 | ✅ 已完成 |
 | 2 | 完整静态 UI（模拟消息） | ✅ 已完成 |
+| 3 | API 设置（Key 输入 / 保存 / 测试连接） | ✅ 已完成（Key 存储与设置持久化；「测试连接」待 Worker 就绪） |
 | 3 | API 设置（Key 输入 / 保存 / 测试连接） | ⬜ |
 | 4 | 建立 Cloudflare Worker | ⬜ |
 | 5 | 打通 DeepSeek 非流式请求 | ⬜ |

@@ -32,14 +32,15 @@ function sortByUpdatedAt(list: Conversation[]): Conversation[] {
  * 阶段 9 / 10：替换为 IndexedDB 持久化 + 完整的新建 / 删除 / 重命名交互，
  * 本 Hook 对外暴露的接口保持不变，因此 UI 层无需改动。
  */
-export function useConversations(): ConversationStore {
+export function useConversations(initialMode: AgentMode = 'teacher'): ConversationStore {
   const [conversations, setConversations] = useState<Conversation[]>(() =>
     sortByUpdatedAt(seedConversations),
   )
-  // 默认打开最近更新的会话，避免首次进入就是空白页
-  const [activeId, setActiveId] = useState<string | null>(
-    () => sortByUpdatedAt(seedConversations)[0]?.id ?? null,
-  )
+  // 默认打开最近更新、且与上次使用模式一致的会话，避免刷新后模式与内容不一致
+  const [activeId, setActiveId] = useState<string | null>(() => {
+    const sorted = sortByUpdatedAt(seedConversations)
+    return (sorted.find((item) => item.mode === initialMode) ?? sorted[0])?.id ?? null
+  })
 
   const active = useMemo(
     () => conversations.find((conversation) => conversation.id === activeId) ?? null,

@@ -79,3 +79,19 @@ Decision: 源码文件（尤其含中文的 UTF-8 文件）一律使用编辑器
 Reason: 本机默认 shell 是 Windows PowerShell 5.1，`Set-Content` 默认使用 ANSI 编码，实测会把 `src/mocks/mockData.ts` 的中文写成乱码，导致读取失败、必须重建文件。
 
 Impact: 需要批量文本替换时使用 `pwsh`（PowerShell 7）或显式指定 `-Encoding utf8`；命令行的编码问题也写入 README 排查章节（12.5）。
+
+## API Key 的存储位置是单一事实来源
+
+Decision: 同一个 API Key 只允许存在于一个存储位置：勾选「记住此设备」→ localStorage，否则 → sessionStorage；写入前先清空两处。`ApiSettings.rememberApiKey` 不独立持久化，始终由「Key 实际存放在哪」推导。
+
+Reason: 避免出现「复选框勾了但 Key 其实只在 sessionStorage」或相反的不一致状态；这类不一致会直接造成用户对隐私承诺的不信任。
+
+Impact: 不要新增第三条 Key 存储路径；任何读取 Key 的代码都必须经过 `src/services/storage.ts` 的 `loadApiKey()`；设置界面必须如实展示 `keyStorage`。
+
+## 刷新后按上次模式打开对应会话
+
+Decision: `useConversations(initialMode)` 接收当前模式，初始化时选择「最近更新且模式一致」的会话。
+
+Reason: 模式偏好持久化在 localStorage，而会话默认选中最近一条；两者不一致会导致刷新后顶部显示学生模式、正文却是教师会话。
+
+Impact: 阶段 9 / 10 接入 IndexedDB 后应改为持久化 `activeConversationId` 并由会话推导模式，但「模式与内容必须一致」这一约束要保留。

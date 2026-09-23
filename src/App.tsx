@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { ChatView } from '@/components/chat/ChatView'
 import { Button } from '@/components/common/Button'
@@ -9,9 +9,10 @@ import { Header } from '@/components/layout/Header'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { AboutModal } from '@/components/settings/AboutModal'
 import { ApiSettingsModal } from '@/components/settings/ApiSettingsModal'
-import { apiConfig } from '@/config/api'
+import { useApiSettings } from '@/hooks/useApiSettings'
 import { useChat } from '@/hooks/useChat'
 import { useConversations } from '@/hooks/useConversations'
+import { loadPreferences, savePreferences } from '@/services/storage'
 import type { ApiConnectionStatus } from '@/types/chat'
 import type { AgentMode, Conversation } from '@/types/conversation'
 import type { ApiSettings } from '@/types/settings'
@@ -21,33 +22,31 @@ const modeLabel: Record<AgentMode, string> = { teacher: '教师模式', student:
 /**
  * 组装层：只负责状态编排与弹窗调度，具体 UI 与业务逻辑在各自的组件 / Hook 中。
  *
- * 阶段 2：会话数据与 API 设置保存在内存中（含模拟消息）。
- * 阶段 3 接入 API 设置持久化，阶段 9 / 10 接入 IndexedDB，阶段 7 接入真实流式回答。
+ * 阶段 3：API 设置与 Key 已接入浏览器本地存储（sessionStorage / localStorage 分离）。
+ * 阶段 7 接入真实流式回答，阶段 9 / 10 接入 IndexedDB 会话持久化。
  */
 export default function App() {
-  const store = useConversations()
-  const [mode, setMode] = useState<AgentMode>('teacher')
+  const [mode, setMode] = useState<AgentMode>(() => loadPreferences().mode)
+  const store = useConversations(mode)
+  const api = useApiSettings()
   const chat = useChat({ store, mode })
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
-
-  const [apiSettings, setApiSettings] = useState<ApiSettings>({
-    provider: apiConfig.defaultProvider,
-    baseUrl: apiConfig.defaultBaseUrl,
-    model: apiConfig.defaultModel,
-    rememberApiKey: false,
-  })
-  const [apiKey, setApiKey] = useState('')
+  const [clearApiOpen, setClearApiOpen] = useState(false)
 
   const [pendingMode, setPendingMode] = useState<AgentMode | null>(null)
   const [renaming, setRenaming] = useState<Conversation | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleting, setDeleting] = useState<Conversation | null>(null)
 
-  const configured = apiKey.trim().length > 0
-  const apiStatus: ApiConnectionStatus = configured ? 'unknown' : 'unconfigured'
+  // 模式偏好写入 localStorage（非敏感项）
+  useEffect(() => {
+    savePreferences({ mode })
+  }, [mode])
+
+  const apiStatus: ApiConnectionStatus = api.configured ? 'unknown' : 'unconfigured'
 
   const switchMode = useCallback(
     (next: AgentMode) => {
@@ -91,14 +90,8 @@ export default function App() {
     setRenameValue(conversation.title)
   }
 
-  const handleSaveSettings = (next: ApiSettings, nextKey: string) => {
-    setApiSettings(next)
-    setApiKey(nextKey)
-  }
-
-  const handleClearApiKey = () => {
-    setApiKey('')
-    setApiSettings((prev) => ({ ...prev, rememberApiKey: false }))
+  const handleSaveSettings = (next: ApiSettings, nextApiKey: string) => {
+    api.save(next, nextApiKey)
   }
 
   return (
@@ -129,7 +122,7 @@ export default function App() {
         header={
           <Header
             mode={mode}
-            modelName={apiSettings.model}
+            modelName={api.settings.model}
             apiStatus={apiStatus}
             onOpenSidebar={() => setSidebarOpen(true)}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -142,7 +135,7 @@ export default function App() {
           status={chat.status}
           input={chat.input}
           isGenerating={chat.isGenerating}
-          needsApiKey={!configured}
+          needsApiKey={!api.configured}
           onInputChange={chat.setInput}
           onSend={() => void chat.send()}
           onStop={chat.stop}
@@ -153,14 +146,29 @@ export default function App() {
 
       <ApiSettingsModal
         open={settingsOpen}
-        settings={apiSettings}
-        apiKey={apiKey}
+        settings={api.settings}
+        apiKey={api.apiKey}
+        keyStorage={api.keyStorage}
         onClose={() => setSettingsOpen(false)}
         onSave={handleSaveSettings}
-        onClearApiKey={handleClearApiKey}
+        onClearApiKey={() => setClearApiOpen(true)}
       />
 
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+
+      <ConfirmDialog
+        open={clearApiOpen}
+        title="确定清除 API 配置吗？"
+        description="将从本机浏览器（sessionStorage 与 localStorage）中删除已保存的 API Key，并把 Base URL 与模型恢复为默认值。"
+        confirmText="清除"
+        cancelText="取消"
+        danger
+        onConfirm={() => {
+          api.clearAll()
+          setClearApiOpen(false)
+        }}
+        onCancel={() => setClearApiOpen(false)}
+      />
 
       <ConfirmDialog
         open={pendingMode !== null}
