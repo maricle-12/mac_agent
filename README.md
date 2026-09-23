@@ -616,15 +616,273 @@ Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善
 
 ---
 
-## 14. Cloudflare 部署步骤
+## 14. Cloudflare 部署步骤（从零开始，含新手注意事项）
 
-> 本节将在**阶段 14** 补全为面向新手的逐步教程（注册 Cloudflare → 创建 Pages 项目 → 部署 Worker → 修改 `VITE_API_ENDPOINT` → 配置 CORS → 最终验证）。
+> 目标：最后你会得到一个公网链接，例如 `https://ai-edu-agent.pages.dev`，
+> 任何人打开它、填入自己的 DeepSeek API Key 就能用。
+>
+> **部署顺序很重要**：先部署 Worker（拿到它的地址），再部署前端（需要填入该地址），
+> 最后回到 Worker 把前端域名加入白名单。总共约 15 分钟。
+
+### 14.0 你需要准备什么
+
+| 需要 | 费用 | 说明 |
+| --- | --- | --- |
+| 一台电脑 | — | Windows / macOS 都可以 |
+| Node.js | 免费 | 见 14.1 |
+| Git | 免费 | 见 14.2，仅「方式 A」需要 |
+| Cloudflare 账号 | 免费 | 见 14.4，只需邮箱 |
+| GitHub 账号 | 免费 | **可选**，只有「方式 A」需要 |
+| DeepSeek API Key | 按量付费 | 由**每个使用者自己**提供，部署者不需要 |
+
+> 不需要：VPS、云服务器、数据库、Docker、Python、Coze、Dify。
+
+### 14.1 安装 Node.js
+
+1. 打开 <https://nodejs.org/zh-cn>，下载 **LTS** 版本（本机开发环境用的是 22 / 24）。
+2. 一路「下一步」安装完成。
+3. 打开终端（Windows 按 `Win + R` 输入 `cmd`），执行：
+
+```bash
+node -v
+npm -v
+```
+
+看到版本号即成功。**版本要求：Node ≥ 20.19（推荐 22 或更高）** —— 这是 Vite 8 的硬性要求，
+版本过低会在 Cloudflare 构建时报语法错误。
+
+### 14.2 安装 Git（仅「方式 A」需要）
+
+1. 打开 <https://git-scm.com/downloads> 下载并安装。
+2. 验证：`git --version`
+
+### 14.3 下载项目并本地跑通
+
+**先本地跑通，再去部署** —— 本地能跑，部署 99% 也能跑；本地跑不通，部署只会更难查。
+
+```bash
+# 1) 进入项目目录（把路径换成你自己的）
+cd demo
+
+# 2) 安装依赖（约 1 分钟）
+npm install
+
+# 3) 启动前端
+npm run dev
+```
+
+浏览器打开 <http://localhost:5173>。**再开一个终端**启动 Worker：
+
+```bash
+cd demo/worker
+npm install          # 首次需要
+npm run dev          # 启动在 http://127.0.0.1:8787
+```
+
+验证 Worker：浏览器打开 <http://127.0.0.1:8787/api/health> 应返回 `{"ok":true,...}`。
+
+回到网页 → 右上角「设置」→ 填入你的 DeepSeek API Key → 点「测试连接」→
+看到绿色**「连接成功」**就说明 `页面 → Worker → DeepSeek` 整条链路是通的。
+
+> **第 7 点：前端如何连接本地 Worker？**
+> 前端读的是 `.env.development` 里的 `VITE_API_ENDPOINT`，默认已写成
+> `http://localhost:8787/api/chat`。改了 `.env.*` 必须**重启** `npm run dev` 才生效。
+> 如果 Worker 换了端口，`worker/wrangler.toml` 的 `[dev] port` 与这里的地址必须一致。
+
+### 14.4 注册 Cloudflare
+
+1. 打开 <https://dash.cloudflare.com/sign-up>，用邮箱注册并验证。
+2. 登录后进入 Dashboard。**不需要**添加域名，也不需要付费。
+
+### 14.5 部署 Worker（第 11、12 点）
+
+```bash
+cd demo/worker
+npx wrangler login        # 首次：会打开浏览器让你授权，点 Allow
+npx wrangler deploy
+```
+
+成功后会输出类似：
+
+```
+Uploaded ai-edu-agent-api
+Deployed ai-edu-agent-api triggers
+  https://ai-edu-agent-api.<你的子域>.workers.dev
+```
+
+**把这一行地址记下来**，下一步要用。它对应的接口是
+`https://ai-edu-agent-api.<你的子域>.workers.dev/api/chat`。
+
+验证：浏览器打开 `https://ai-edu-agent-api.<你的子域>.workers.dev/api/health`，
+应返回 `{"ok":true,...}`。
+
+> 如果想改 Worker 名字，修改 `worker/wrangler.toml` 第一行的 `name`。
+> 该名字决定最终域名，改名后记得重新记地址。
+
+### 14.6 部署前端到 Cloudflare Pages（第 9、10 点）
+
+有两种方式，**方式 B 更简单**（不需要 GitHub），推荐新手先用 B。
+
+#### 方式 B：直接上传（推荐，最快）
+
+```bash
+cd demo
+npm run build                                  # 生成 dist/
+npx wrangler pages deploy dist --project-name ai-edu-agent
+```
+
+首次执行会让你选择/创建一个 Pages 项目，之后会输出访问地址，形如
+`https://ai-edu-agent.pages.dev`。**把前端地址记下来**，下一步要用。
+
+#### 方式 A：连接 GitHub（适合以后想自动部署）
+
+1. 把代码推到 GitHub（先 `git remote add origin <你的仓库>`，再 `git push -u origin main`）。
+   > ⚠️ 推送前确认 `.env.local` / `.dev.vars` 没有被提交（`.gitignore` 已处理），
+   > 项目里也**不应该有任何真实 API Key**。
+2. Cloudflare Dashboard → **Workers & Pages** → **Create** → **Pages** → **Connect to Git**。
+3. 选择你的仓库，然后填写构建配置：
+
+| 配置项 | 值 |
+| --- | --- |
+| Framework preset | `None`（或 Vite） |
+| Build command | `npm run build` |
+| Build output directory | `dist` |
+| 环境变量 `NODE_VERSION` | `22` |
+
+> `NODE_VERSION=22` **很重要**：Pages 构建镜像的默认 Node 可能低于 Vite 8 要求的 20.19。
+> 项目里已放了 `.node-version` 与 `.nvmrc`（内容都是 `22`）作为兜底，
+> 但显式设置环境变量最稳妥。
+
+4. 点 **Save and Deploy**。完成后同样会得到 `https://<项目名>.pages.dev`。
+
+### 14.7 把 Worker 地址告诉前端（第 13 点）
+
+前端需要知道 Worker 的地址。**推荐用 Pages 环境变量**（不用改代码、不用提交）：
+
+1. Cloudflare Dashboard → **Workers & Pages** → 选中你的 Pages 项目 →
+   **Settings** → **Environment variables**（生产环境 Production）。
+2. 新增一条：
+
+| 变量名 | 值 |
+| --- | --- |
+| `VITE_API_ENDPOINT` | `https://ai-edu-agent-api.<你的子域>.workers.dev/api/chat` |
+
+3. 回到 **Deployments** → 对最新一次部署点 **Retry deployment**（必须重新构建才生效，
+   因为 Vite 是在构建时把该变量写进产物的）。
+
+> **已验证**：Cloudflare Pages 的环境变量会**覆盖**仓库里的 `.env.production`，
+> 所以不需要去改那个占位符，也不需要再提交一次代码。
+
+<details>
+<summary>替代做法：直接改 <code>.env.production</code>（需要提交并重新部署）</summary>
+
+```bash
+# 编辑 demo/.env.production，把占位符换成你的真实地址
+VITE_API_ENDPOINT=https://ai-edu-agent-api.<你的子域>.workers.dev/api/chat
+```
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name ai-edu-agent
+```
+
+该地址会出现在前端产物里（这是正常的、公开的信息），但**绝不要**把 API Key 写进任何 `.env` 文件。
+</details>
+
+### 14.8 配置 CORS 白名单（第 14 点，最容易漏的一步）
+
+Worker 默认只允许本地端口访问。现在要把它改成允许你的 Pages 域名，否则网页会报
+`blocked by CORS policy`。
+
+编辑 `demo/worker/wrangler.toml`：
+
+```toml
+[vars]
+ALLOWED_ORIGINS = "https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev"
+```
+
+⚠️ **两个都要写**：
+
+- `https://ai-edu-agent.pages.dev` —— 正式域名（apex）；
+- `https://*.ai-edu-agent.pages.dev` —— 每次推送产生的预览域名。
+
+通配符 `*.x.pages.dev` **不包含** `x.pages.dev` 本身，只写通配符会导致正式域名被拒。
+
+本地端口（5173 / 4173 / 4180）在生产环境可以删掉，只留 Pages 域名更安全。
+如果以后还要在本地连线上 Worker，再把它们加回去。
+
+然后重新部署 Worker：
+
+```bash
+cd demo/worker
+npx wrangler deploy
+```
+
+### 14.9 最终测试（第 15 点）
+
+在**手机浏览器**或另一台电脑上打开 `https://ai-edu-agent.pages.dev`，依次确认：
+
+1. 页面能打开，左侧 / 顶部显示「AI 教育智能体」；
+2. 首次进入显示欢迎引导与「配置 DeepSeek API」按钮；
+3. 填入自己的 DeepSeek API Key → 点「测试连接」→ 显示绿色**「连接成功」**；
+4. 输入「帮我设计一节小学二年级数学《分类与整理》课程」→ 回答**逐字出现**（流式）；
+5. 生成过程中点「停止生成」→ 已输出内容保留；
+6. 点「重新生成」→ 重新流式输出，且问题不会变成两条；
+7. **按 F5 刷新** → 聊天记录仍在；
+8. 关闭浏览器标签页再打开 → 历史仍在（若勾选了「在此设备记住 API Key」，无需重新输入）；
+9. 悬停（手机上一直可见）会话的「⋯」→ 重命名 / 删除都可用；
+10. 设置里「清除本地聊天记录」→ 确认 → 列表清空。
+
+### 14.10 以后如何更新
+
+| 改动内容 | 需要做什么 |
+| --- | --- |
+| 改前端（UI / Prompt / 逻辑） | `npm run build` → `npx wrangler pages deploy dist --project-name ai-edu-agent`（方式 A 则只需 push） |
+| 改 Worker（转发逻辑 / 白名单） | `cd worker && npx wrangler deploy` |
+| 改产品名称 / 副标题 | 只改 `src/config/app.ts` 后重新部署前端 |
+| 改 System Prompt | 只改 `src/prompts/*.ts` 后重新部署前端（新请求立即生效） |
+| 改品牌配色 | 只改 `src/index.css` 的 `@theme` 后重新部署前端 |
 
 ---
 
-## 15. 常见问题排查
+## 15. 最终验收清单
 
-### 15.1 `npm install` 很慢或失败
+对应需求文档第五十二条，逐条给出验证方式。`npm run check:ui` 会自动覆盖其中大部分。
+
+| # | 验收项 | 状态 | 验证方式 |
+| --- | --- | --- | --- |
+| 1 | 打开公网链接能够显示页面 | ⏳ 待你部署后确认 | 14.9 第 1 步 |
+| 2 | 不登录即可使用 | ✅ | 无账号系统，直接可用 |
+| 3 | 可以填写 DeepSeek API Key | ✅ | 设置弹窗；ui-check「API 设置弹窗」 |
+| 4 | API Key 不写死在源码 | ✅ | `git grep 'sk-[A-Za-z0-9]{20,}'` 无结果；产物扫描无密钥 |
+| 5 | 可以测试 API | ✅ | 「测试连接」（成功 / 失败两条分支均有自动化用例） |
+| 6 | DeepSeek 能正常回答 | ⏳ 需你的 Key | `npm run check:stream`（真实流式链路） |
+| 7 | AI 使用 Streaming 输出 | ✅ | ui-check「流式增量渲染」断言内容随时间增长 |
+| 8 | 能停止生成 | ✅ | ui-check「停止生成」断言保留内容且 AbortSignal 触发 |
+| 9 | 教师模式 Prompt 正确 | ✅ | ui-check 拦截请求体断言 system 内容 |
+| 10 | 学生模式 Prompt 正确 | ✅ | 同上（且不含教师 Prompt） |
+| 11 | 可以新建对话 | ✅ | 侧边栏「新建对话」；ui-check 覆盖 |
+| 12 | 历史记录本地保存 | ✅ | IndexedDB；ui-check 直接读库校验 |
+| 13 | 刷新后聊天不会消失 | ✅ | ui-check「历史记录持久化」 |
+| 14 | 可以删除历史记录 | ✅ | ⋯ → 删除；ui-check「删除后刷新不复活」 |
+| 15 | 可以重新生成 | ✅ | ui-check「重新生成不重复用户消息」 |
+| 16 | 可以复制 AI 回答 | ✅ | 消息下方「复制」按钮（含降级方案） |
+| 17 | API 错误有友好提示 | ✅ | 第 12 章错误对照表（13 种场景） |
+| 18 | 页面手机端可使用 | ✅ | ui-check 4 种尺寸 + 触摸目标 + 窄屏常显操作按钮 |
+| 19 | Cloudflare Pages 部署正常 | ⏳ 待你部署后确认 | 14.6 |
+| 20 | Worker 部署正常 | ⏳ 待你部署后确认 | 14.5 |
+| 21 | 不需要 VPS | ✅ | 纯静态 + 无状态 Worker |
+| 22 | 不需要数据库 | ✅ | IndexedDB 在浏览器本地；Worker 无 KV / D1 |
+| 23 | 不需要 Coze / Dify | ✅ | 未使用任何低代码 Agent 平台 |
+| 24 | 用户模型费用由自己的 API Key 承担 | ✅ | Key 由用户输入，Worker 不持有任何 Key |
+
+标记 ⏳ 的 4 条只能由你在真实 Cloudflare 账号上完成后确认。
+
+---
+
+## 16. 常见问题排查
+
+### 16.1 `npm install` 很慢或失败
 
 先确认网络能访问 npm 源，或换用国内镜像：
 
@@ -633,17 +891,17 @@ npm config set registry https://registry.npmmirror.com
 npm install
 ```
 
-### 15.2 端口被占用（5173 / 4173 / 8787）
+### 16.2 端口被占用（5173 / 4173 / 8787）
 
 Vite 会自动换到下一个可用端口，注意看终端输出的实际地址。Worker 端口被占用时，
 修改 `worker/wrangler.toml` 里的端口，并同步修改 `.env.development` 的
 `VITE_API_ENDPOINT`。
 
-### 15.3 改了 `.env.development` 不生效
+### 16.3 改了 `.env.development` 不生效
 
 Vite 只在启动时读取环境变量文件。改完必须**重启** `npm run dev`。
 
-### 15.4 数学公式显示成行内样式，而不是独立成行
+### 16.4 数学公式显示成行内样式，而不是独立成行
 
 `remark-math` 只有把 `$$` 写在**单独一行**时才识别为块级公式：
 
@@ -657,7 +915,7 @@ $$
 `src/utils/markdown.ts` 的 `normalizeMarkdown()` 中自动规范化，无需手动处理。
 若公式完全没渲染，检查 `src/main.tsx` 是否引入了 `katex/dist/katex.min.css`。
 
-### 15.5 Windows 上编辑源码后中文变成乱码 ⚠️
+### 16.5 Windows 上编辑源码后中文变成乱码 ⚠️
 
 **不要用 Windows PowerShell 5.1 的 `Get-Content` / `Set-Content` 改写源码文件。**
 PowerShell 5.1 的 `Set-Content` 默认使用 ANSI 编码，会把 UTF-8 中文写成乱码，
@@ -666,12 +924,12 @@ PowerShell 5.1 的 `Set-Content` 默认使用 ANSI 编码，会把 UTF-8 中文�
 正确做法：用 VS Code（右下角确认编码为 `UTF-8`）编辑；
 必须用命令行时请用 PowerShell 7（`pwsh`）或在写入时显式指定 UTF-8。
 
-### 15.6 `npm run build` 报 TypeScript 错误但页面能跑
+### 16.6 `npm run build` 报 TypeScript 错误但页面能跑
 
 Vite 开发服务器**不做类型检查**，类型错误只在 `build` 或 `typecheck` 时暴露。
 提交前请务必执行 `npm run build`。
 
-### 15.7 页面白屏
+### 16.7 页面白屏
 
 打开浏览器控制台（F12）看第一条红色报错。常见原因：
 
@@ -679,7 +937,7 @@ Vite 开发服务器**不做类型检查**，类型错误只在 `build` 或 `typ
 - 依赖没装全 → 重新执行 `npm install`；
 - 路径别名问题 → 确认 `tsconfig.app.json` 与 `vite.config.ts` 中的 `@` 指向 `${projectRoot}/src`。
 
-### 15.8 `npm run check:ui` 报「未找到 Chrome / Edge」
+### 16.8 `npm run check:ui` 报「未找到 Chrome / Edge」
 
 脚本会自动查找 Chrome / Edge。如果装在非默认位置，指定路径即可：
 
@@ -689,7 +947,7 @@ $env:CHROME_PATH="D:\你的路径\chrome.exe" # PowerShell
 npm run check:ui
 ```
 
-### 15.9 页面报 CORS 错误 / Worker 返回 `origin_not_allowed`
+### 16.9 页面报 CORS 错误 / Worker 返回 `origin_not_allowed`
 
 说明访问网页的域名不在 Worker 的 `ALLOWED_ORIGINS` 里。打开 `worker/wrangler.toml`，
 把你的域名加进去（必须是完整 origin，含协议，不要以 `/` 结尾），然后重新部署：
@@ -703,7 +961,7 @@ ALLOWED_ORIGINS = "https://你的项目.pages.dev,https://*.你的项目.pages.d
 cd demo/worker && npx wrangler deploy
 ```
 
-### 15.10 页面报「无法连接模型服务」/ Worker 请求失败
+### 16.10 页面报「无法连接模型服务」/ Worker 请求失败
 
 1. 确认 Worker 在跑：浏览器打开 `http://127.0.0.1:8787/api/health` 应返回 `{"ok":true,...}`。
 2. 确认端口一致：`worker/wrangler.toml` 的 `[dev] port` 与 `.env.development` 的
@@ -711,46 +969,46 @@ cd demo/worker && npx wrangler deploy
 3. 生产环境确认 `.env.production` 已改成真实 Worker 地址，并且**重新构建**过前端。
 4. 修改 `.env.*` 后必须重启 `npm run dev`。
 
-### 15.11 返回 `base_url_not_allowed`
+### 16.11 返回 `base_url_not_allowed`
 
 Worker 出于 SSRF 防护只允许白名单内的 API 地址。默认只允许 `https://api.deepseek.com`
 （支持 `/v1` 这类路径变体）。要接入其他 OpenAI 兼容服务，请修改
 `worker/src/config.ts` 的 `ALLOWED_BASE_URL_ORIGINS` 后重新部署 Worker。
 
-### 15.12 `wrangler dev` 启动失败
+### 16.12 `wrangler dev` 启动失败
 
 - 首次使用需要登录：`npx wrangler login`（仅部署需要，本地开发不需要）。
 - 8787 端口被占用：改 `wrangler.toml` 的 `[dev] port`，并同步改 `.env.development`。
 - 提示 `compatibility_date` 过新：把 `wrangler.toml` 里的日期改成不晚于今天的日期。
 
-### 15.13 测试连接提示「尚未配置模型转发地址」
+### 16.13 测试连接提示「尚未配置模型转发地址」
 
 说明当前构建里的 `VITE_API_ENDPOINT` 还是占位符（`https://REPLACE-WITH-YOUR-WORKER...`）。
 按第 6 章跑本地开发（会自动读取 `.env.development`），或按第 14 章部署 Worker 并修改
 `.env.production` 后重新构建。
 
-### 15.14 测试连接成功，但聊天回答不出现或不是流式
+### 16.14 测试连接成功，但聊天回答不出现或不是流式
 
-- 先确认 `.env.production` / `.env.development` 里的端点不是占位符（见 15.13）。
+- 先确认 `.env.production` / `.env.development` 里的端点不是占位符（见 16.13）。
 - 若回答一次性整段出现、没有逐字输出：说明中间有层做了缓冲。本项目 Worker 直接透传
   `ReadableStream`，可用 `npm run check:stream` 测量首字节与分块到达时间来定位。
 - 若一直显示「AI 正在思考」不结束：可能是网络中断或上游挂死，
   前端会在 60 秒无增量后自动中断并提示；也可手动点「停止生成」。
 
-### 15.15 开发时页面莫名整页刷新
+### 16.15 开发时页面莫名整页刷新
 
 `worker/` 是独立子项目，若不排除会被 Vite 的文件监听捕获，导致改 Worker 时前端清缓存重载。
 本项目已在 `vite.config.ts` 的 `server.watch.ignored` 中排除 `worker/`、`screenshots/`、
 `project_memory/`。若你新增了其他子目录（例如将来的 `functions/`），记得一并排除。
 
-### 15.16 手机上点不到会话的「⋯」（重命名 / 删除）
+### 16.16 手机上点不到会话的「⋯」（重命名 / 删除）
 
 已按设计处理：**窄屏（<768px）下会话行的「⋯」按钮始终显示**。
 桌面端才做「悬停才出现」的收起效果。不要改成只依赖 `@media (hover: none)` ——
 不同浏览器与机型对 hover 能力的上报并不一致，会把「能否管理会话」交给一个不可靠的判断。
 如果发现手机上仍看不到该按钮，检查自定义样式的加载顺序是否覆盖了 `.conversation-more`。
 
-### 15.17 手机上软键盘盖住输入框
+### 16.17 手机上软键盘盖住输入框
 
 已做两件事：
 

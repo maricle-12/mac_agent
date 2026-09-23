@@ -257,6 +257,22 @@ Reason: 实测两个后台 dev 进程意外退出时，一次性 26 项用例全
 
 Impact: 排查顺序固定为：服务器是否存活 → 页面能否渲染 → 再定位具体用例。不要从断言细节入手。
 
+## 部署推荐用 Pages 环境变量而不是改 .env.production
+
+Decision: 部署教程以「在 Cloudflare Pages 设置 `VITE_API_ENDPOINT` 环境变量并重新部署」为推荐路径，改 `.env.production` 并提交作为替代方案。
+
+Reason: 已实测（设置进程环境变量后构建，产物中只出现该值、不出现 `.env.production` 的占位符）——Vite 的进程环境变量**优先于** `.env` 文件。因此用 Pages 环境变量无需改代码、无需再提交一次。
+
+Impact: 本地 `npm run build` 仍产出占位符（这是期望行为，本地构建不应硬编码线上地址）；教程里必须提醒：**环境变量改动后必须在 Pages 上重新部署**，否则不会生效。
+
+## Pages 域名白名单必须同时写 apex 与通配符
+
+Decision: 部署教程明确要求 `ALLOWED_ORIGINS` 同时写 `https://<项目>.pages.dev` 与 `https://*.<项目>.pages.dev`。
+
+Reason: 通配符 `*.x.pages.dev` 按标准语义**不匹配** `x.pages.dev` 本身。只写通配符会导致正式域名被 CORS 拒绝，而错误现象是一个难以定位的 `blocked by CORS policy`。
+
+Impact: 若要改动来源匹配逻辑，必须先确认这条约定与文档同步更新；新增其他「容易写漏」的配置项时，也应在教程里显式写出正反例。
+
 ## 依赖真实端点的自动化用例必须显式声明并跳过
 
 Decision: `ui-check.mjs` 增加「探测转发端点是否已配置」用例；端点仍是占位符时，依赖真实请求的用例调用 `ctx.skip()` 并打印原因。
