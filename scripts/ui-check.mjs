@@ -94,12 +94,12 @@ async function waitForVersion() {
   throw new Error('等待 Chrome 调试端口超时')
 }
 
-/** 在页面中执行表达式并取回值 */
+/** 在页面中执行表达式并取回值（表达式内可以使用 await） */
 async function evaluate(ws, sessionId, expression) {
   const result = await send(
     ws,
     'Runtime.evaluate',
-    { expression: `(() => { ${expression} })()`, returnByValue: true, awaitPromise: true },
+    { expression: `(async () => { ${expression} })()`, returnByValue: true, awaitPromise: true },
     sessionId,
   )
   if (result.exceptionDetails) {
@@ -107,6 +107,23 @@ async function evaluate(ws, sessionId, expression) {
   }
   return result.result.value
 }
+
+/** 直接读取 IndexedDB，用于校验持久化结果而不是只看界面 */
+const DB_DUMP_EXPR = `
+  const db = await new Promise((resolve) => {
+    const request = indexedDB.open('ai-edu-agent');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+  });
+  if (!db) return { error: '无法打开数据库' };
+  const all = await new Promise((resolve) => {
+    const request = db.transaction('conversations', 'readonly').objectStore('conversations').getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve([]);
+  });
+  db.close();
+  return { count: all.length, rows: all.map((item) => item.title + '(' + item.messages.length + ')') };
+`
 
 /** 页面内可复用的 DOM 辅助函数（注入到每个表达式前） */
 const DOM_HELPERS = `
@@ -241,12 +258,50 @@ const LAST_ANSWER_EXPR = `
   return bodies.length ? bodies[bodies.length - 1].innerText : '';
 `
 
+/**
+ * 统计可见的会话行数量。
+ * 注意：移动端抽屉关闭状态仍保留在 DOM 中（只是 md:hidden），
+ * 因此必须过滤掉不可见元素，否则会把同一个会话数两遍。
+ */
+const CONVERSATION_COUNT_EXPR = `
+  return $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length;
+`
+
+/** 找到指定标题的可见会话行上的 ⋯ 按钮并点击 */
+function openConversationMenuExpr(target) {
+  return `
+    const more = $$('button[aria-label="更多操作"]')
+      .filter((el) => visible(el))
+      .find((btn) => {
+        const row = btn.closest('div');
+        return row && (row.textContent || '').includes('${target}');
+      });
+    if (!more) return false;
+    more.click();
+    return true;
+  `
+}
+
 const STREAM_PARTS = ['分类', '与整理', '是二年级', '数学的', '重要内容', '。']
 const STREAM_TEXT = STREAM_PARTS.join('')
 
+/** 一段覆盖各种 Markdown 元素的回答，流式分块下发 */
+const RICH_MARKDOWN_PARTS = [
+  '## 教学目标\n\n',
+  '- **知识与技能**：能按给定标准分类\n',
+  '- 过程与方法：动手操作、交流\n\n',
+  '| 项目 | 内容 |\n| --- | --- |\n| 教学重点 | 单一标准分类 |\n\n',
+  '> 注意：标准不同，结果可能不同。\n\n',
+  '行内公式 $x^2$，块级公式：\n\n$$\nx^2 + y^2 = 1\n$$\n\n',
+  '```text\n任务单：把图形分一分\n```\n\n',
+  '### 小结\n\n',
+  '分类要先确定标准。\n',
+]
+const RICH_MARKDOWN_TEXT = '分类要先确定标准。'
+
 // ---------------------------------------------------------------- 测试场景
 
-step('首屏渲染：标题、模式、会话列表', async (ctx) => {
+step('首屏渲染：应用外壳 + 首次使用引导（空库）', async (ctx) => {
   const info = await ctx.eval(`
     return {
       title: document.title,
@@ -257,65 +312,13 @@ step('首屏渲染：标题、模式、会话列表', async (ctx) => {
   ctx.assert(info.rootChildren > 0, '#root 未渲染')
   ctx.assert(info.title.includes('AI 教育智能体'), `标题异常: ${info.title}`)
   ctx.assert(info.text.includes('教师模式'), '缺少「教师模式」')
-  ctx.assert(info.text.includes('二年级数学分类与整理'), '缺少历史会话')
+  ctx.assert(info.text.includes('学生模式'), '缺少「学生模式」')
   ctx.assert(info.text.includes('deepseek-chat'), '顶部未显示模型名')
   ctx.assert(info.text.includes('未配置'), 'API 未配置状态未显示')
-})
-
-step('Markdown 渲染：标题 / 表格 / 代码块 / 数学公式', async (ctx) => {
-  const info = await ctx.eval(`
-    return {
-      h2: $$('.md-body h2').length,
-      table: $$('.md-body table').length,
-      code: $$('.md-body pre code').length,
-      copyButton: Boolean(byText('复制')),
-      katexInline: $$('.md-body .katex').length,
-      katexDisplay: $$('.md-body .katex-display').length,
-      blockquote: $$('.md-body blockquote').length,
-      list: $$('.md-body ul, .md-body ol').length,
-    };
-  `)
-  ctx.assert(info.h2 >= 3, `标题渲染异常: h2=${info.h2}`)
-  ctx.assert(info.table >= 1, '表格未渲染')
-  ctx.assert(info.code >= 1, '代码块未渲染')
-  ctx.assert(info.copyButton, '代码块复制按钮缺失')
-  ctx.assert(info.katexInline >= 1, '行内数学公式未渲染')
-  ctx.assert(info.katexDisplay >= 1, '块级数学公式未渲染')
-  ctx.assert(info.blockquote >= 1, '引用未渲染')
-  ctx.assert(info.list >= 1, '列表未渲染')
-})
-
-step('切换会话时同步模式（学生模式 + 块级公式）', async (ctx) => {
-  await ctx.eval(`
-    const btn = $$('button').find((el) => (el.textContent || '').includes('这道题为什么错'));
-    if (!btn) return false;
-    btn.click();
-    return true;
-  `)
-  await sleep(400)
-
-  const info = await ctx.eval(`
-    return {
-      header: $('h1')?.textContent ?? '',
-      display: $$('.md-body .katex-display').length,
-      modeBadge: document.body.innerText.includes('学生模式'),
-    };
-  `)
-  ctx.assert(info.header === '学生模式', `顶部模式未同步为「学生模式」: ${info.header}`)
-  ctx.assert(info.modeBadge, '侧边栏未高亮学生模式')
-  ctx.assert(info.display >= 2, `学生回答中的块级公式未渲染: ${info.display}`)
-
-  await ctx.eval(`
-    const btn = $$('button').find((el) => (el.textContent || '').includes('二年级数学分类与整理'));
-    if (!btn) return false;
-    btn.click();
-    return true;
-  `)
-  await sleep(350)
-  ctx.assert(
-    await ctx.eval(`return $('h1')?.textContent === '教师模式';`),
-    '切回教师会话后模式未同步',
-  )
+  // 全新浏览器环境（IndexedDB 为空）应显示欢迎引导，而不是空白
+  ctx.assert(info.text.includes('欢迎使用'), '未配置 Key 且无历史时未显示欢迎引导')
+  ctx.assert(info.text.includes('今天想准备什么课程？'), '未显示教师模式空状态问候语')
+  ctx.assert(info.text.includes('还没有对话记录'), '空历史时未显示占位提示')
 })
 
 step('新建对话 → 空状态与快捷卡片', async (ctx) => {
@@ -387,14 +390,14 @@ step('探测转发端点是否已配置', async (ctx) => {
   await sleep(200)
 })
 
-step('发送消息 → 流式增量渲染（stub SSE）', async (ctx) => {
+step('发送消息 → 流式增量渲染 + Markdown/公式渲染 + 自动标题', async (ctx) => {
   if (ctx.endpointConfigured === false) {
     ctx.skip('当前构建的 VITE_API_ENDPOINT 仍是占位符，无法发起聊天请求（阶段 14 部署后生效）')
   }
   // 前置条件：上一步的生成必须已经结束，否则 send() 会被安全守卫拦下
   await ctx.waitFor(`return !byText('停止生成');`, 15000)
 
-  await installStreamStub(ctx, STREAM_PARTS, 200)
+  await installStreamStub(ctx, RICH_MARKDOWN_PARTS, 160)
   try {
     await ctx.eval(`return setValue('textarea', '什么是分类与整理');`)
     await sleep(150)
@@ -413,9 +416,9 @@ step('发送消息 → 流式增量渲染（stub SSE）', async (ctx) => {
     )
 
     // 前后采样两次：内容必须是在增长，而不是一次性出现
-    await sleep(300)
-    const first = await ctx.eval(LAST_ANSWER_EXPR)
     await sleep(400)
+    const first = await ctx.eval(LAST_ANSWER_EXPR)
+    await sleep(500)
     const second = await ctx.eval(LAST_ANSWER_EXPR)
     ctx.assert(first.length > 0, '首个增量没有渲染出来')
     ctx.assert(
@@ -423,7 +426,7 @@ step('发送消息 → 流式增量渲染（stub SSE）', async (ctx) => {
       `回答没有随流式增长（${first.length} → ${second.length}），可能是一次性渲染`,
     )
 
-    await ctx.waitFor(`return document.body.innerText.includes('${STREAM_TEXT}');`, 10000)
+    await ctx.waitFor(`return document.body.innerText.includes('${RICH_MARKDOWN_TEXT}');`, 15000)
     // 最后一句话出现时可能还没处理完 [DONE]，等状态真正回到空闲
     await ctx.waitFor(
       `return !byText('停止生成') && Boolean(byText('重新生成'));`,
@@ -437,6 +440,31 @@ step('发送消息 → 流式增量渲染（stub SSE）', async (ctx) => {
       await ctx.eval(`return Boolean(byText('复制')) && Boolean(byText('重新生成'));`),
       '回答完成后未出现「复制」与「重新生成」',
     )
+
+    // Markdown 各元素渲染
+    const markdown = await ctx.eval(`
+      return {
+        h2: $$('.md-body h2').length,
+        h3: $$('.md-body h3').length,
+        table: $$('.md-body table').length,
+        code: $$('.md-body pre code').length,
+        copyButton: Boolean(byText('复制')),
+        katexInline: $$('.md-body .katex').length,
+        katexDisplay: $$('.md-body .katex-display').length,
+        blockquote: $$('.md-body blockquote').length,
+        list: $$('.md-body ul, .md-body ol').length,
+        strong: $$('.md-body strong').length,
+      };
+    `)
+    ctx.assert(markdown.h2 >= 1 && markdown.h3 >= 1, `标题渲染异常: ${JSON.stringify(markdown)}`)
+    ctx.assert(markdown.table >= 1, '表格未渲染')
+    ctx.assert(markdown.code >= 1, '代码块未渲染')
+    ctx.assert(markdown.copyButton, '代码块复制按钮缺失')
+    ctx.assert(markdown.katexInline >= 1, '行内数学公式未渲染')
+    ctx.assert(markdown.katexDisplay >= 1, '块级数学公式未渲染')
+    ctx.assert(markdown.blockquote >= 1, '引用未渲染')
+    ctx.assert(markdown.list >= 1, '列表未渲染')
+    ctx.assert(markdown.strong >= 1, '粗体未渲染')
 
     const title = await ctx.eval(`
       return $$('button').map((el) => el.textContent || '').find((t) => t.includes('什么是分类与整理')) ?? '';
@@ -704,7 +732,60 @@ step('API 设置弹窗：字段与隐私提示', async (ctx) => {
   `)
   ctx.assert(after.modalClosed, '保存后弹窗未关闭')
   ctx.assert(after.status, '配置 Key 后顶部状态未更新')
-  ctx.assert(!after.guide, '配置 Key 后仍显示首次使用引导')
+})
+
+step('历史记录持久化：刷新后会话与消息仍在', async (ctx) => {
+  const before = await ctx.eval(`
+    return {
+      conversations: $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length,
+      titleA: document.body.innerText.includes('什么是分类与整理'),
+    };
+  `)
+  ctx.assert(before.conversations >= 2, `刷新前会话数量异常: ${before.conversations}`)
+  ctx.assert(before.titleA, '刷新前侧边栏缺少会话标题')
+
+  await ctx.reload()
+
+  const afterReload = await ctx.eval(`
+    return {
+      conversations: $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length,
+      mode: $('h1')?.textContent ?? '',
+    };
+  `)
+  ctx.assert(
+    afterReload.conversations === before.conversations,
+    `刷新后会话数量变了: ${before.conversations} → ${afterReload.conversations}`,
+  )
+  ctx.assert(
+    afterReload.mode === '学生模式',
+    `刷新后未回到上次活跃的会话（当前模式 ${afterReload.mode}）`,
+  )
+
+  // 切到富文本会话，验证消息内容完整保留
+  const clicked = await ctx.eval(`
+    const btn = $$('button').find((el) => (el.textContent || '').includes('什么是分类与整理'));
+    if (btn) btn.click();
+    return Boolean(btn);
+  `)
+  ctx.assert(clicked, '刷新后侧边栏找不到之前的会话')
+  await sleep(450)
+
+  const rich = await ctx.eval(`
+    return {
+      mode: $('h1')?.textContent ?? '',
+      answer: document.body.innerText.includes('${RICH_MARKDOWN_TEXT}'),
+      userMessage: document.body.innerText.includes('什么是分类与整理'),
+      table: $$('.md-body table').length,
+      katexDisplay: $$('.md-body .katex-display').length,
+      code: $$('.md-body pre code').length,
+    };
+  `)
+  ctx.assert(rich.answer, '刷新后回答内容丢失（IndexedDB 未生效）')
+  ctx.assert(rich.userMessage, '刷新后用户消息丢失')
+  ctx.assert(rich.table >= 1, '刷新后 Markdown 表格丢失')
+  ctx.assert(rich.katexDisplay >= 1, '刷新后块级公式丢失')
+  ctx.assert(rich.code >= 1, '刷新后代码块丢失')
+  ctx.assert(rich.mode === '教师模式', '切回教师会话后模式未同步')
 })
 
 step(
@@ -1000,18 +1081,19 @@ step('清除 API 配置：Key 与设置一并清除', async (ctx) => {
   )
 })
 
-step('模式偏好持久化到 localStorage', async (ctx) => {
+step('模式偏好持久化 + 切换模式建新对话', async (ctx) => {
   // 先选中一个有内容的会话，切换模式应弹确认
-  await ctx.eval(`
+  const selected = await ctx.eval(`
     const btn = $$('button').find((el) =>
-      (el.textContent || '').includes('二年级数学分类与整理'));
+      (el.textContent || '').includes('什么是分类与整理'));
     if (btn) btn.click();
     return Boolean(btn);
   `)
-  await sleep(400)
+  ctx.assert(selected, '找不到用于测试的会话')
+  await sleep(450)
 
   await ctx.eval(`return clickText('学生模式');`)
-  await sleep(400)
+  await sleep(450)
   const confirmInfo = await ctx.eval(`
     return {
       shown: document.body.innerText.includes('切换模式将创建一个新对话'),
@@ -1024,10 +1106,14 @@ step('模式偏好持久化到 localStorage', async (ctx) => {
   )
 
   await ctx.eval(`return clickExact('新建学生模式对话');`)
-  await sleep(450)
+  await sleep(500)
   ctx.assert(
     await ctx.eval(`return $('h1')?.textContent === '学生模式';`),
     '确认后未切换到学生模式',
+  )
+  ctx.assert(
+    await ctx.eval(`return $$('.md-body').length === 0;`),
+    '新建的学生模式会话不应带有上一条会话的内容',
   )
 
   await ctx.reload()
@@ -1035,74 +1121,17 @@ step('模式偏好持久化到 localStorage', async (ctx) => {
     await ctx.eval(`return $('h1')?.textContent === '学生模式';`),
     '刷新后未保留上次使用的模式',
   )
-  // 刷新后应自动打开该模式下的会话（学生会话含 3 个块级公式，教师会话只有 1 个）
   ctx.assert(
-    (await ctx.eval(`return $$('.md-body .katex-display').length;`)) >= 2,
+    await ctx.eval(`return document.body.innerText.includes('今天想学习什么？');`),
     '刷新后未打开与学生模式匹配的会话',
   )
 
   // 还原为教师模式
   await ctx.eval(`return clickText('教师模式');`)
-  await sleep(400)
-  await ctx.eval(`
-    const btn = byExact('新建教师模式对话');
-    if (btn) btn.click();
-    return true;
-  `)
-  await sleep(400)
+  await sleep(450)
   ctx.assert(
     await ctx.eval(`return $('h1')?.textContent === '教师模式';`),
     '未能切回教师模式',
-  )
-
-  // 空会话下切换模式不应弹确认，直接就地切换
-  await ctx.eval(`return clickText('新建对话');`)
-  await sleep(350)
-  await ctx.eval(`return clickText('学生模式');`)
-  await sleep(350)
-  const emptySwitch = await ctx.eval(`
-    return {
-      mode: $('h1')?.textContent ?? '',
-      noConfirm: !document.body.innerText.includes('切换模式将创建一个新对话'),
-    };
-  `)
-  ctx.assert(emptySwitch.mode === '学生模式', '空会话下切换模式失败')
-  ctx.assert(emptySwitch.noConfirm, '空会话下切换模式不应弹出确认')
-
-  await ctx.eval(`return clickText('教师模式');`)
-  await sleep(350)
-  ctx.assert(
-    await ctx.eval(`return $('h1')?.textContent === '教师模式';`),
-    '未能切回教师模式',
-  )
-})
-
-step('删除对话：⋯ 菜单 → 确认弹窗 → 取消', async (ctx) => {
-  const opened = await ctx.eval(`
-    const more = $$('button[aria-label="更多操作"]').find((btn) => {
-      const row = btn.closest('div');
-      return row && (row.textContent || '').includes('一元一次方程练习');
-    });
-    if (!more) return false;
-    more.click();
-    return true;
-  `)
-  ctx.assert(opened, '未能打开会话的 ⋯ 菜单')
-  await sleep(250)
-  ctx.assert(await ctx.eval(`return Boolean(byText('重命名'));`), '菜单中缺少「重命名」')
-  ctx.assert(await ctx.eval(`return Boolean(byText('删除'));`), '菜单中缺少「删除」')
-
-  await ctx.eval(`return clickText('删除');`)
-  await sleep(300)
-  ctx.assert(
-    await ctx.eval(`return document.body.innerText.includes('确定删除此对话吗');`),
-    '未出现删除确认弹窗',
-  )
-  await ctx.eval(`return clickText('取消');`)
-  await sleep(250)
-  ctx.assert(
-    await ctx.eval(`return !document.body.innerText.includes('确定删除此对话吗');`),
-    '取消后确认弹窗未关闭',
   )
 })
 
@@ -1110,7 +1139,7 @@ step('桌面布局验收：侧边栏 / 正文宽度 / 固定区 / 无横向溢�
   // 先选中一个带消息的会话，确保渲染的是消息列表而不是空状态
   await ctx.eval(`
     const btn = $$('button').find((el) =>
-      (el.textContent || '').includes('二年级数学分类与整理'));
+      (el.textContent || '').includes('什么是分类与整理'));
     if (btn) btn.click();
     return Boolean(btn);
   `)
@@ -1206,8 +1235,147 @@ step('移动端：侧边栏折叠与抽屉', async (ctx) => {
     '抽屉打开后侧边栏内容不可见',
   )
 
+  // 关闭抽屉并恢复桌面视口。
+  // 注意：抽屉关闭后仍留在 DOM 中（只是 md:hidden），
+  // 如果不关掉，后面统计会话数量会把同一个会话数两遍。
+  await ctx.eval(`
+    const overlay = $$('div').find((el) => el.className.includes('bg-ink/30'));
+    if (overlay) overlay.click();
+    return true;
+  `)
+  await sleep(300)
+
   await ctx.setViewport(1440, 900, false)
   await sleep(300)
+  ctx.assert(
+    await ctx.eval(
+      `return $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length === $$('button[aria-label="更多操作"]').length;`,
+    ),
+    '抽屉未真正关闭（DOM 中仍有两份会话列表）',
+  )
+})
+
+step('删除对话：⋯ 菜单 → 确认弹窗 → 取消 / 删除后刷新不复活', async (ctx) => {
+  const target = '什么是分类与整理'
+  const opened = await ctx.eval(openConversationMenuExpr(target))
+  ctx.assert(opened, '未能打开会话的 ⋯ 菜单')
+  await sleep(250)
+  ctx.assert(await ctx.eval(`return Boolean(byText('重命名'));`), '菜单中缺少「重命名」')
+  ctx.assert(await ctx.eval(`return Boolean(byText('删除'));`), '菜单中缺少「删除」')
+
+  await ctx.eval(`return clickText('删除');`)
+  await sleep(300)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('确定删除此对话吗');`),
+    '未出现删除确认弹窗',
+  )
+  await ctx.eval(`return clickText('取消');`)
+  await sleep(300)
+  ctx.assert(
+    await ctx.eval(`return !document.body.innerText.includes('确定删除此对话吗');`),
+    '取消后确认弹窗未关闭',
+  )
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('${target}');`),
+    '取消删除后会话不应消失',
+  )
+
+  // 真正删除，并确认刷新后不会「复活」
+  const beforeCount = await ctx.eval(CONVERSATION_COUNT_EXPR)
+  const dbBefore = await ctx.eval(DB_DUMP_EXPR)
+  await ctx.eval(openConversationMenuExpr(target))
+  await sleep(250)
+  // 第一次点击命中菜单里的「删除」→ 打开确认弹窗；第二次才命中弹窗里的「删除」
+  await ctx.eval(`return clickExact('删除');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('确定删除此对话吗');`),
+    '未出现删除确认弹窗',
+  )
+  await ctx.eval(`return clickExact('删除');`)
+  await sleep(500)
+
+  ctx.assert(
+    await ctx.eval(`return !document.body.innerText.includes('${target}');`),
+    '删除后会话仍然出现在侧边栏',
+  )
+
+  await ctx.reload()
+  const afterReload = await ctx.eval(`
+    const rows = $$('button[aria-label="更多操作"]')
+      .filter((el) => visible(el))
+      .map((btn) => {
+        const row = btn.closest('div');
+        return row ? (row.textContent || '').replace(/\\s+/g, ' ').slice(0, 24) : '';
+      });
+    return {
+      count: $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length,
+      exists: document.body.innerText.includes('${target}'),
+      rows,
+    };
+  `)
+  ctx.assert(!afterReload.exists, '删除后刷新，会话又出现了（IndexedDB 未真正删除）')
+  ctx.assert(
+    afterReload.count === beforeCount - 1,
+    `删除后会话数量不正确: 界面 ${beforeCount} → 刷新后 ${afterReload.count}
+      IndexedDB(删除前): ${dbBefore.count} 条 [${dbBefore.rows.join(' | ')}]
+      刷新后剩余: [${afterReload.rows.join(' | ')}]`,
+  )
+})
+
+step('清除本地聊天记录（隐私功能）', async (ctx) => {
+  const before = await ctx.eval(CONVERSATION_COUNT_EXPR)
+  ctx.assert(before > 0, '清除前没有可清理的会话，用例前提不成立')
+
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('本地数据');`),
+    '设置弹窗缺少「本地数据」区块',
+  )
+
+  await ctx.eval(`return clickText('清除本地聊天记录');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('确定清除本地聊天记录吗');`),
+    '未出现清除聊天记录的确认弹窗',
+  )
+  await ctx.eval(`return clickExact('清除');`)
+  await sleep(500)
+
+  ctx.assert(
+    await ctx.eval(`return $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length === 0;`),
+    '清除后侧边栏仍有会话',
+  )
+  ctx.assert(
+    await ctx.eval(
+      `return document.body.innerText.includes('还没有对话记录') || document.body.innerText.includes('今天想准备什么课程？');`,
+    ),
+    '清除后未回到空状态',
+  )
+
+  await ctx.eval(`return clickExact('取消');`)
+  await sleep(250)
+
+  // 刷新后仍应为空
+  await ctx.reload()
+  ctx.assert(
+    await ctx.eval(`return $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length === 0;`),
+    '清除后刷新，聊天记录又出现了（IndexedDB 未真正清空）',
+  )
+})
+
+step('清除后仍可正常新建对话', async (ctx) => {
+  await ctx.eval(`return clickText('新建对话');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return $$('button[aria-label="更多操作"]').filter((el) => visible(el)).length === 1;`),
+    '清除后无法新建对话',
+  )
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('今天想准备什么课程？');`),
+    '新建对话后未显示空状态',
+  )
 })
 
 // ---------------------------------------------------------------- 运行器

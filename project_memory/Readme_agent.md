@@ -46,10 +46,9 @@ demo/
 │  ├─ types/                 # ✅ 公共类型（chat / conversation / settings）
 │  ├─ utils/                 # ✅ cn / id / clipboard / time / title / markdown
 │  ├─ prompts/               # ✅ teacher.ts / student.ts / shared.ts / index.ts（getSystemPrompt）
-│  ├─ db/                    # ⏳ 阶段 9：IndexedDB 封装（idb）
+│  ├─ db/                    # ✅ IndexedDB 封装（indexedDb.ts，idb）
 │  ├─ services/              # ✅ storage、chatApi（Worker 调用与错误映射）、sseStream（SSE 解析）
-│  ├─ hooks/                 # ✅ useConversations / useChat（真实流式）/ useApiSettings
-│  ├─ mocks/                 # ✅ 仅剩示例会话（阶段 9 接入 IndexedDB 后移除）
+│  ├─ hooks/                 # ✅ useConversations（IndexedDB）/ useChat（真实流式）/ useApiSettings
 │  ├─ components/            # ✅ layout / chat / settings / history / common
 │  └─ App.tsx                # ✅ 组装层，只做状态编排与弹窗调度
 ├─ worker/                   # ✅ 阶段 4：Cloudflare Worker
@@ -87,10 +86,12 @@ demo/
 ## 验证手段
 
 - `npm run build`：`tsc -b` + `vite build`，必须零类型错误。
-- `npm run check:ui`（20 项）：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
-  存储行为、流式渲染（桩 SSE：增量增长 / 停止中断 / 重新生成不重复）、测试连接错误路径
-  （真实打到 DeepSeek）、三档桌面分辨率布局、移动端抽屉，
+- `npm run check:ui`（23 项）：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
+  存储行为、流式渲染（桩 SSE：增量增长 / 停止中断 / 重新生成不重复）、System Prompt 注入、
+  **IndexedDB 持久化（刷新 / 删除 / 清除后的一致性，直接读库校验）**、
+  测试连接错误路径（真实打到 DeepSeek）、三档桌面分辨率布局、移动端抽屉，
   并汇总 console 错误 / 未捕获异常 / 预期外的网络错误。端点未配置时相关用例显式 SKIP。
+  验证生产构建时可用 `.env.production.local` 指向本地 Worker 跑完整检查。
 - `npm run check:sse`（30 项）：SSE 解析器单元验证，无需网络与 Key。
 - `npm run check:stream`：真实流式链路验证（需 `DEEPSEEK_API_KEY`）。
 - `cd worker && npm run check`（38 项）：Worker 路由、CORS、请求校验、14 例 SSRF 防护、

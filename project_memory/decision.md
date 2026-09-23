@@ -184,6 +184,30 @@ Reason: 用户明确要求「System Prompt 不需要写入 IndexedDB 每条消�
 
 Impact: 不要为了「省一次拼接」而把 system 消息持久化；ui-check 中有「连续两条消息后 system 仍只有一条」的回归断言，必须保持通过。
 
+## IndexedDB 写库按会话节流，但新建与删除立即落库
+
+Decision: `useConversations` 的所有改动先更新 React 状态（界面即时响应），再按会话节流 400ms 写入 IndexedDB；新建会话与删除会话走立即写入/删除；`pagehide` / `visibilitychange` 时冲刷待写入内容。
+
+Reason: 流式输出期间增量更新非常频繁，若每次更新都写库会造成大量无谓的磁盘写入；但新建会话若延迟写入，「刚建好就刷新」会丢失。
+
+Impact: 新增会话级写操作时，先判断它属于「高频可节流」（如流式内容）还是「低频必须立即落库」（如创建、删除、清空）；不要绕过这套机制直接调 `putConversation` 之外的新路径。
+
+## 全新用户从空状态开始，不预置示例会话
+
+Decision: 删除 `src/mocks/` 与全部模拟会话/模拟回答；IndexedDB 为空时显示欢迎引导 + 空状态。
+
+Reason: 需求文档 §11 要求新建会话时显示欢迎界面、§22 要求首次进入显示友好的欢迎引导。预置假会话会让用户误以为这些是真实历史，也会让「首次使用体验」无法被验证。
+
+Impact: 不要为了「让界面看起来热闹」而恢复种子数据；空状态与欢迎引导是必须保持的首次体验，ui-check 有断言覆盖。
+
+## 生产构建的验证方式：临时 .env.production.local 指向本地 Worker
+
+Decision: 验证生产构建时，创建被 gitignore 的 `.env.production.local` 把 `VITE_API_ENDPOINT` 指向本地 Worker，跑完整自动化检查，验证后删除该文件。
+
+Reason: `.env.production` 在阶段 14 之前是占位符，此时依赖 Worker 的用例只能 SKIP，等于没有覆盖压缩后的真实产物；而直接用 `.env.production` 写本地地址又会误提交。
+
+Impact: 每次改动影响面较大时（例如升级依赖、改构建配置），部署前应做一次这样的生产构建全量检查。
+
 ## 依赖真实端点的自动化用例必须显式声明并跳过
 
 Decision: `ui-check.mjs` 增加「探测转发端点是否已配置」用例；端点仍是占位符时，依赖真实请求的用例调用 `ctx.skip()` 并打印原因。

@@ -34,6 +34,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [clearApiOpen, setClearApiOpen] = useState(false)
+  const [clearChatOpen, setClearChatOpen] = useState(false)
 
   const [pendingMode, setPendingMode] = useState<AgentMode | null>(null)
   const [renaming, setRenaming] = useState<Conversation | null>(null)
@@ -126,19 +127,25 @@ export default function App() {
           />
         }
       >
-        <ChatView
-          conversation={store.active}
-          mode={mode}
-          status={chat.status}
-          input={chat.input}
-          isGenerating={chat.isGenerating}
-          needsApiKey={!api.configured}
-          onInputChange={chat.setInput}
-          onSend={() => void chat.send()}
-          onStop={chat.stop}
-          onRegenerate={() => void chat.regenerate()}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
+        {store.ready ? (
+          <ChatView
+            conversation={store.active}
+            mode={mode}
+            status={chat.status}
+            input={chat.input}
+            isGenerating={chat.isGenerating}
+            needsApiKey={!api.configured}
+            onInputChange={chat.setInput}
+            onSend={() => void chat.send()}
+            onStop={chat.stop}
+            onRegenerate={() => void chat.regenerate()}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center bg-surface text-sm text-ink-muted">
+            正在读取本地记录…
+          </div>
+        )}
       </AppLayout>
 
       <ApiSettingsModal
@@ -146,13 +153,30 @@ export default function App() {
         settings={api.settings}
         apiKey={api.apiKey}
         keyStorage={api.keyStorage}
+        storageAvailable={store.storageAvailable}
+        conversationCount={store.conversations.length}
         onClose={() => setSettingsOpen(false)}
         onSave={handleSaveSettings}
         onTest={api.test}
         onClearApiKey={() => setClearApiOpen(true)}
+        onClearConversations={() => setClearChatOpen(true)}
       />
 
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+
+      <ConfirmDialog
+        open={clearChatOpen}
+        title="确定清除本地聊天记录吗？"
+        description="将删除本机浏览器中保存的全部对话与消息，且无法恢复。API 配置与 API Key 不受影响。"
+        confirmText="清除"
+        cancelText="取消"
+        danger
+        onConfirm={() => {
+          store.clearAll()
+          setClearChatOpen(false)
+        }}
+        onCancel={() => setClearChatOpen(false)}
+      />
 
       <ConfirmDialog
         open={clearApiOpen}

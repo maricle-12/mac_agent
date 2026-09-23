@@ -209,8 +209,12 @@ set DEEPSEEK_API_KEY=sk-xxxx && npm run check:stream      # CMD
 node scripts/screenshot.mjs http://localhost:5173/
 ```
 
-`ui-check.mjs` 会检查 21 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
+`ui-check.mjs` 会检查 23 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
 修改 UI 后建议先跑一遍，能第一时间发现渲染或交互回归。
+
+其中包含**历史记录持久化验证**（直接读写 IndexedDB 校验，不只看界面）：
+刷新后会话与消息仍在（含 Markdown、表格、公式）、刷新后回到上次活跃的会话、
+删除会话后刷新不会「复活」、清除本地聊天记录后刷新仍为空。
 
 其中包含**System Prompt 验证**（拦截请求体断言）：教师/学生模式下 system 消息内容分别正确、
 system 消息位于最前且**有且仅有一条**、连续请求后不会在历史中累积、
@@ -229,6 +233,18 @@ system 消息位于最前且**有且仅有一条**、连续请求后不会在历
 
 > 生产构建在 `.env.production` 仍为占位符时，依赖 Worker 的用例会自动标记为 `SKIP`
 > 而不是失败 —— 这是预期状态，阶段 14 部署完 Worker 并填好地址后即会正常执行。
+
+**想验证「生产构建」本身**（推荐在部署前做一次）：临时创建一个被 gitignore 的
+`.env.production.local` 把生产包指向本地 Worker，就能对着压缩后的真实产物跑完整检查：
+
+```bash
+# 新建 demo/.env.production.local，内容：
+#   VITE_API_ENDPOINT=http://127.0.0.1:8787/api/chat
+npm run build && npm run preview
+node scripts/ui-check.mjs http://localhost:4173/     # 预期 23 项全部通过
+```
+
+检查完记得删除该文件（它只用于本地验证，不应提交）。
 
 > **本地完整链路**：`localhost 页面 → localhost Worker → DeepSeek`，分两个终端启动：
 
@@ -320,8 +336,19 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 | API Key（默认） | sessionStorage | `ai-edu-agent:api-key:session` | 关闭浏览器即失效 |
 | API Key（勾选记住后） | localStorage | `ai-edu-agent:api-key:local` | 仅用户主动勾选才写入 |
 | Provider / Base URL / Model | localStorage | `ai-edu-agent:api-settings` | 非敏感 |
-| 当前模式 | localStorage | `ai-edu-agent:preferences` | 非敏感 |
-| 聊天记录 | IndexedDB | `ai-edu-agent` 数据库 | 阶段 9 接入 |
+| 当前模式 / 当前会话 id | localStorage | `ai-edu-agent:preferences` | 非敏感 |
+| 聊天记录（含消息） | IndexedDB | 数据库 `ai-edu-agent`，表 `conversations` | 见下 |
+
+**聊天记录的持久化策略**（`src/hooks/useConversations.ts`）：
+
+- 一次会话（连同它的 `messages` 数组）作为一条记录整体存取；
+- 所有改动先更新界面（即时响应），再**按会话节流**写入 —— 流式输出时增量非常频繁，
+  若每个 token 都写库会造成大量无谓的磁盘写入（默认 400ms 内同一会话只写一次）；
+- 新建会话与删除会话**立即落库**，避免「刚建好就刷新」导致丢失；
+- 页面隐藏 / 离开时把待写入内容立刻落库；
+- 首次加载会申请**持久化存储**（`navigator.storage.persist()`），降低浏览器在磁盘紧张时
+  清除聊天记录的概率（被拒绝也不影响使用）；
+- 隐私模式等无法使用 IndexedDB 的环境会自动降级为仅内存，并在设置里给出提示。
 
 规则：
 
@@ -399,7 +426,8 @@ Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善
 | 6 | 改为 Streaming（SSE 透传） | ✅ 已完成 |
 | 7 | 网页接入 Streaming + 停止生成 | ✅ 已完成 |
 | 8 | 教师 / 学生 System Prompt | ✅ 已完成 |
-| 9 | IndexedDB 历史记录 | ⬜ |
+| 9 | IndexedDB 历史记录 | ✅ 已完成 |
+| 10 | 新建 / 删除 / 重命名对话 | ⬜ |
 | 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 7 | 网页接入 Streaming + 停止生成 | ⬜ |
 | 8 | 教师 / 学生 System Prompt | ⬜ |

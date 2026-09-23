@@ -14,11 +14,17 @@ export interface ApiSettingsModalProps {
   apiKey: string
   /** API Key 当前的存储位置，用于如实告知用户 */
   keyStorage: ApiKeyStorage
+  /** 本机是否支持 IndexedDB（不支持时聊天记录只能留在内存） */
+  storageAvailable: boolean
+  /** 当前本地保存的对话数量 */
+  conversationCount: number
   onClose: () => void
   onSave: (settings: ApiSettings, apiKey: string) => void
   /** 测试连接：用当前表单值发一次极小请求，返回结果供本弹窗展示 */
   onTest: (settings: ApiSettings, apiKey: string) => Promise<TestConnectionResult>
   onClearApiKey: () => void
+  /** 清除本地聊天记录（二次确认由外层负责） */
+  onClearConversations: () => void
 }
 
 const labelClass = 'block text-[13px] font-medium text-ink'
@@ -44,10 +50,13 @@ export function ApiSettingsModal({
   settings,
   apiKey,
   keyStorage,
+  storageAvailable,
+  conversationCount,
   onClose,
   onSave,
   onTest,
   onClearApiKey,
+  onClearConversations,
 }: ApiSettingsModalProps) {
   const [form, setForm] = useState<ApiSettings>(settings)
   const [key, setKey] = useState(apiKey)
@@ -291,6 +300,31 @@ export function ApiSettingsModal({
               网络无法访问模型服务，或 Worker 未启动。
             </p>
           ) : null}
+        </div>
+
+        <div className="border-t border-line-soft pt-4">
+          <h3 className="text-[13px] font-medium text-ink">本地数据</h3>
+          <p className="mt-1 text-[12px] leading-5 text-ink-soft">
+            聊天记录只保存在你自己的浏览器中（IndexedDB），不会上传到任何服务器。
+            当前共 {conversationCount} 个对话。
+          </p>
+
+          {!storageAvailable ? (
+            <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-[12px] leading-5 text-warning">
+              当前浏览器无法使用 IndexedDB（可能处于隐私模式），聊天记录只能保留在本次会话中。
+            </p>
+          ) : null}
+
+          <div className="mt-2.5">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={conversationCount === 0}
+              onClick={onClearConversations}
+            >
+              清除本地聊天记录
+            </Button>
+          </div>
         </div>
       </div>
     </Modal>
