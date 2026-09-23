@@ -90,37 +90,40 @@ demo/
 ├─ public/
 │  ├─ favicon.svg             # 站点图标
 │  └─ _redirects              # Cloudflare Pages SPA 回退，保证刷新不 404
+├─ scripts/
+│  ├─ ui-check.mjs            # 无依赖 UI 自动化检查（渲染 + 交互 + 控制台错误）
+│  └─ screenshot.mjs          # 无依赖页面截图工具
 ├─ src/
-│  ├─ main.tsx                # 应用挂载入口
-│  ├─ App.tsx                 # 组装层（只做组合，不写业务逻辑）
-│  ├─ index.css               # Tailwind 引入 + 设计令牌（品牌改色只改这里）
+│  ├─ main.tsx                # 应用挂载入口（含 KaTeX 样式引入）
+│  ├─ App.tsx                 # 组装层：状态编排与弹窗调度，不写具体业务
+│  ├─ index.css               # Tailwind 引入 + 设计令牌 + Markdown 正文排版
 │  ├─ vite-env.d.ts           # 环境变量类型声明
 │  ├─ config/
 │  │  ├─ app.ts               # 品牌配置：appName / appSubtitle / logo / version
-│  │  └─ api.ts               # 端点、Provider 列表、默认模型、上下文条数上限
-│  ├─ types/
-│  │  ├─ chat.ts              # 消息、请求体、状态机类型
-│  │  ├─ conversation.ts      # 会话与列表摘要类型
-│  │  └─ settings.ts          # API 设置与 UI 偏好类型
-│  ├─ prompts/                # System Prompt 唯一来源（teacher.ts / student.ts / index.ts）
-│  ├─ db/                     # IndexedDB 封装（indexedDb.ts）
-│  ├─ services/               # chatApi.ts（SSE 解析）、storage.ts（Key 与偏好读写）
-│  ├─ hooks/                  # useChat / useApiSettings / useConversations
+│  │  ├─ api.ts               # 端点、Provider 列表、默认模型、上下文条数上限
+│  │  └─ quickPrompts.ts      # 空状态快捷卡片、问候语、输入框占位符
+│  ├─ types/                  # chat / conversation / settings 公共类型
+│  ├─ utils/                  # cn / id / clipboard / time / title / markdown
+│  ├─ hooks/
+│  │  ├─ useConversations.ts  # 会话增删改（阶段 9 换为 IndexedDB，对外接口不变）
+│  │  └─ useChat.ts           # 发送 / 停止 / 重新生成（阶段 7 换为真实流式）
+│  ├─ mocks/                  # 阶段 2 临时模拟数据（阶段 7 / 9 完成后删除）
 │  └─ components/
 │     ├─ layout/              # AppLayout / Sidebar / Header
-│     ├─ chat/                # ChatView / MessageList / MessageBubble / ChatInput / EmptyState / MarkdownRenderer
-│     ├─ settings/            # ApiSettingsModal
+│     ├─ chat/                # ChatView / MessageList / MessageBubble
+│     │                       # ChatInput / EmptyState / MarkdownRenderer / CodeBlock
+│     ├─ settings/            # ApiSettingsModal / AboutModal
 │     ├─ history/             # ConversationList / ConversationItem
-│     └─ common/              # Modal / Button 等基础组件
-├─ worker/                    # Cloudflare Worker（独立 package.json + wrangler.toml）
-│  ├─ wrangler.toml
-│  ├─ package.json
-│  ├─ tsconfig.json
-│  └─ src/index.ts            # POST /api/chat：校验 → 转发 → 流式透传
+│     └─ common/              # Modal / ConfirmDialog / Button / icons
+├─ src/prompts/               # ⏳ 阶段 8 创建（teacher.ts / student.ts / index.ts）
+├─ src/services/ · src/db/    # ⏳ 阶段 3 / 7 / 9 创建
+├─ worker/                    # ⏳ 阶段 4 创建（独立 package.json + wrangler.toml）
 └─ project_memory/            # 项目长期记忆（状态 / 决策 / 地图）
 ```
 
-> 目录中的 `prompts/`、`db/`、`services/`、`hooks/`、`components/`、`worker/` 会随开发阶段逐步填充。
+> 标 ⏳ 的目录会在对应阶段创建。目录职责：`config` 放可改配置、`types` 放公共类型、
+> `prompts` 放 System Prompt（唯一来源）、`db` 封装 IndexedDB、`services` 封装 API 与存储、
+> `hooks` 放状态与业务逻辑、`components` 按 layout / chat / settings / history / common 拆分。
 
 ---
 
@@ -173,8 +176,26 @@ npm run dev
 | --- | --- |
 | `npm run dev` | 启动本地开发服务器（热更新） |
 | `npm run build` | 生产构建（先做 TypeScript 全量类型检查，再打包到 `dist/`） |
-| `npm run preview` | 本地预览 `dist/` 构建产物 |
+| `npm run preview` | 本地预览 `dist/` 构建产物（http://localhost:4173） |
 | `npm run typecheck` | 只做类型检查 |
+| `npm run check:ui` | 无头浏览器 UI 自动化检查（需先启动 `npm run dev` 或 `npm run preview`） |
+
+### 自动化验证
+
+项目自带两个无第三方依赖的浏览器自动化脚本（用本机 Chrome/Edge 的无头模式 + CDP）：
+
+```bash
+# UI 检查：渲染、Markdown/公式、发送、停止生成、弹窗、删除确认、响应式布局
+npm run check:ui                      # 默认检查 http://localhost:5173/
+
+node scripts/ui-check.mjs http://localhost:4173/   # 也可以检查生产预览
+
+# 截图（输出到 screenshots/，该目录不提交 Git）
+node scripts/screenshot.mjs http://localhost:5173/
+```
+
+`ui-check.mjs` 会检查 12 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
+修改 UI 后建议先跑一遍，能第一时间发现渲染或交互回归。
 
 > **本地完整链路**：`localhost 页面 → localhost Worker → DeepSeek`。
 > Worker 将在**阶段 4** 创建，届时用 `npx wrangler dev`（或 `npm run dev`，在 `worker/` 目录内）启动在 `http://localhost:8787`，前端通过 `.env.development` 中的 `VITE_API_ENDPOINT` 连接它。
@@ -239,7 +260,7 @@ npm run dev
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | 1 | 项目骨架，`npm run dev` 可运行 | ✅ 已完成 |
-| 2 | 完整静态 UI（模拟消息） | ⬜ 待开始 |
+| 2 | 完整静态 UI（模拟消息） | ✅ 已完成 |
 | 3 | API 设置（Key 输入 / 保存 / 测试连接） | ⬜ |
 | 4 | 建立 Cloudflare Worker | ⬜ |
 | 5 | 打通 DeepSeek 非流式请求 | ⬜ |
@@ -263,4 +284,67 @@ npm run dev
 
 ## 12. 常见问题排查
 
-> 本节将在开发过程中持续补充真实遇到的问题与解决方案。
+### 12.1 `npm install` 很慢或失败
+
+先确认网络能访问 npm 源，或换用国内镜像：
+
+```bash
+npm config set registry https://registry.npmmirror.com
+npm install
+```
+
+### 12.2 端口被占用（5173 / 4173 / 8787）
+
+Vite 会自动换到下一个可用端口，注意看终端输出的实际地址。Worker 端口被占用时，
+修改 `worker/wrangler.toml` 里的端口，并同步修改 `.env.development` 的
+`VITE_API_ENDPOINT`。
+
+### 12.3 改了 `.env.development` 不生效
+
+Vite 只在启动时读取环境变量文件。改完必须**重启** `npm run dev`。
+
+### 12.4 数学公式显示成行内样式，而不是独立成行
+
+`remark-math` 只有把 `$$` 写在**单独一行**时才识别为块级公式：
+
+```
+$$
+x^2 + y^2 = 1
+$$
+```
+
+模型经常输出同行写法 `$$x^2 + y^2 = 1$$`。项目已在
+`src/utils/markdown.ts` 的 `normalizeMarkdown()` 中自动规范化，无需手动处理。
+若公式完全没渲染，检查 `src/main.tsx` 是否引入了 `katex/dist/katex.min.css`。
+
+### 12.5 Windows 上编辑源码后中文变成乱码 ⚠️
+
+**不要用 Windows PowerShell 5.1 的 `Get-Content` / `Set-Content` 改写源码文件。**
+PowerShell 5.1 的 `Set-Content` 默认使用 ANSI 编码，会把 UTF-8 中文写成乱码，
+之后 `npm run build` 会报 `invalid UTF-8` 或渲染出乱码。
+
+正确做法：用 VS Code（右下角确认编码为 `UTF-8`）编辑；
+必须用命令行时请用 PowerShell 7（`pwsh`）或在写入时显式指定 UTF-8。
+
+### 12.6 `npm run build` 报 TypeScript 错误但页面能跑
+
+Vite 开发服务器**不做类型检查**，类型错误只在 `build` 或 `typecheck` 时暴露。
+提交前请务必执行 `npm run build`。
+
+### 12.7 页面白屏
+
+打开浏览器控制台（F12）看第一条红色报错。常见原因：
+
+- `#root` 挂载节点缺失 → 检查 `index.html`；
+- 依赖没装全 → 重新执行 `npm install`；
+- 路径别名问题 → 确认 `tsconfig.app.json` 与 `vite.config.ts` 中的 `@` 指向 `${projectRoot}/src`。
+
+### 12.8 `npm run check:ui` 报「未找到 Chrome / Edge」
+
+脚本会自动查找 Chrome / Edge。如果装在非默认位置，指定路径即可：
+
+```bash
+set CHROME_PATH=D:\你的路径\chrome.exe   # Windows CMD
+$env:CHROME_PATH="D:\你的路径\chrome.exe" # PowerShell
+npm run check:ui
+```

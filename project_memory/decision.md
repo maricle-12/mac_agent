@@ -55,3 +55,27 @@ Decision: 开发环境指向 `http://localhost:8787/api/chat`，生产环境指�
 Reason: 用户明确要求该变量名；文件化配置便于新手按 README 逐步替换。
 
 Impact: 部署 Worker 后必须修改 `.env.production` 并重新构建 Pages；该变量只允许放端点，不允许放任何密钥。
+
+## Hook 接口先于存储实现确定，避免 UI 层返工
+
+Decision: 阶段 2 就用 `useConversations` / `useChat` 承载会话增删改与发送逻辑，底层先用内存 + 模拟数据实现。
+
+Reason: UI 组件只依赖 Hook 的对外接口；阶段 7（真实流式）与阶段 9 / 10（IndexedDB）只替换 Hook 内部实现，`components/` 与 `App.tsx` 基本无需改动。
+
+Impact: 后续替换存储或传输层时，必须先保持 `ConversationStore` 与 `UseChatResult` 的接口兼容；如需变更接口，应同步检查所有调用点。
+
+## 块级公式在渲染前做字符串规范化
+
+Decision: 新增 `src/utils/markdown.ts` 的 `normalizeMarkdown()`，把独占一行的 `$$...$$` 转成 `$$` 换行的块级形式，并在 `MarkdownRenderer` 中统一调用。
+
+Reason: `remark-math` 只有在 `$$` 单独成行时才生成块级公式节点（实测：同行 `$$...$$` 会被解析为 `inlineMath`）。DeepSeek 等模型经常输出同行写法，若不规范化，用户会看到公式被挤在行内。
+
+Impact: 不要绕过 `MarkdownRenderer` 直接使用 `react-markdown`；新增 Markdown 预处理逻辑统一放在 `src/utils/markdown.ts`。
+
+## 文字处理规则：禁止用 Windows PowerShell 5.1 改写源码
+
+Decision: 源码文件（尤其含中文的 UTF-8 文件）一律使用编辑器 / 文件工具修改，禁止用 PowerShell 的 `Get-Content` + `Set-Content` 做文本替换。
+
+Reason: 本机默认 shell 是 Windows PowerShell 5.1，`Set-Content` 默认使用 ANSI 编码，实测会把 `src/mocks/mockData.ts` 的中文写成乱码，导致读取失败、必须重建文件。
+
+Impact: 需要批量文本替换时使用 `pwsh`（PowerShell 7）或显式指定 `-Encoding utf8`；命令行的编码问题也写入 README 排查章节（12.5）。

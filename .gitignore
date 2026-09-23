@@ -30,3 +30,6 @@ Thumbs.db
 
 # TypeScript 增量缓存
 *.tsbuildinfo
+
+# 自动化检查产出的截图
+screenshots/

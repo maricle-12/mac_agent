@@ -17,5 +17,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    // KaTeX 体积较大，阶段 13 做代码分割后再收紧该阈值
+    chunkSizeWarningLimit: 900,
   },
 })

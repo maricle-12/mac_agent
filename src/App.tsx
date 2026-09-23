@@ -1,57 +1,229 @@
-import { appConfig } from '@/config/app'
+import { useCallback, useState } from 'react'
+
+import { ChatView } from '@/components/chat/ChatView'
+import { Button } from '@/components/common/Button'
+import { ConfirmDialog } from '@/components/common/ConfirmDialog'
+import { Modal } from '@/components/common/Modal'
+import { AppLayout } from '@/components/layout/AppLayout'
+import { Header } from '@/components/layout/Header'
+import { Sidebar } from '@/components/layout/Sidebar'
+import { AboutModal } from '@/components/settings/AboutModal'
+import { ApiSettingsModal } from '@/components/settings/ApiSettingsModal'
 import { apiConfig } from '@/config/api'
+import { useChat } from '@/hooks/useChat'
+import { useConversations } from '@/hooks/useConversations'
+import type { ApiConnectionStatus } from '@/types/chat'
+import type { AgentMode, Conversation } from '@/types/conversation'
+import type { ApiSettings } from '@/types/settings'
+
+const modeLabel: Record<AgentMode, string> = { teacher: '教师模式', student: '学生模式' }
 
 /**
- * 阶段 1：项目骨架占位页。
- * 仅用于验证 React + TypeScript + Tailwind + Vite 全链路可用，
- * 完整聊天界面将在阶段 2 实现。
+ * 组装层：只负责状态编排与弹窗调度，具体 UI 与业务逻辑在各自的组件 / Hook 中。
+ *
+ * 阶段 2：会话数据与 API 设置保存在内存中（含模拟消息）。
+ * 阶段 3 接入 API 设置持久化，阶段 9 / 10 接入 IndexedDB，阶段 7 接入真实流式回答。
  */
 export default function App() {
+  const store = useConversations()
+  const [mode, setMode] = useState<AgentMode>('teacher')
+  const chat = useChat({ store, mode })
+
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
+
+  const [apiSettings, setApiSettings] = useState<ApiSettings>({
+    provider: apiConfig.defaultProvider,
+    baseUrl: apiConfig.defaultBaseUrl,
+    model: apiConfig.defaultModel,
+    rememberApiKey: false,
+  })
+  const [apiKey, setApiKey] = useState('')
+
+  const [pendingMode, setPendingMode] = useState<AgentMode | null>(null)
+  const [renaming, setRenaming] = useState<Conversation | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [deleting, setDeleting] = useState<Conversation | null>(null)
+
+  const configured = apiKey.trim().length > 0
+  const apiStatus: ApiConnectionStatus = configured ? 'unknown' : 'unconfigured'
+
+  const switchMode = useCallback(
+    (next: AgentMode) => {
+      setMode(next)
+      const active = store.active
+      if (!active) return
+      // 空会话直接改模式，避免历史记录里堆一堆空对话
+      if (active.messages.length === 0) {
+        store.updateMode(active.id, next)
+        return
+      }
+      store.create(next)
+    },
+    [store],
+  )
+
+  const handleModeChange = (next: AgentMode) => {
+    if (next === mode) return
+    const active = store.active
+    if (active && active.messages.length > 0) {
+      setPendingMode(next)
+      return
+    }
+    switchMode(next)
+  }
+
+  const handleSelectConversation = (id: string) => {
+    store.select(id)
+    const target = store.conversations.find((item) => item.id === id)
+    if (target && target.mode !== mode) setMode(target.mode)
+    setSidebarOpen(false)
+  }
+
+  const handleNewConversation = () => {
+    store.create(mode)
+    setSidebarOpen(false)
+  }
+
+  const handleOpenRename = (conversation: Conversation) => {
+    setRenaming(conversation)
+    setRenameValue(conversation.title)
+  }
+
+  const handleSaveSettings = (next: ApiSettings, nextKey: string) => {
+    setApiSettings(next)
+    setApiKey(nextKey)
+  }
+
+  const handleClearApiKey = () => {
+    setApiKey('')
+    setApiSettings((prev) => ({ ...prev, rememberApiKey: false }))
+  }
+
   return (
-    <div className="flex h-full bg-canvas text-ink">
-      <aside className="hidden w-64 shrink-0 flex-col gap-4 border-r border-line bg-sidebar p-4 md:flex">
-        <div className="flex items-center gap-2">
-          <span className="flex size-8 items-center justify-center rounded-lg bg-brand text-xs font-semibold text-white">
-            {appConfig.logo}
-          </span>
-          <span className="text-sm font-semibold">{appConfig.appName}</span>
-        </div>
-        <div className="rounded-lg border border-line bg-surface p-3 text-xs text-ink-soft">
-          侧边栏占位（阶段 2 实现完整结构）
-        </div>
-      </aside>
+    <>
+      <AppLayout
+        sidebarOpen={sidebarOpen}
+        onCloseSidebar={() => setSidebarOpen(false)}
+        sidebar={
+          <Sidebar
+            mode={mode}
+            conversations={store.conversations}
+            activeId={store.activeId}
+            onModeChange={handleModeChange}
+            onNewConversation={handleNewConversation}
+            onSelectConversation={handleSelectConversation}
+            onRenameConversation={handleOpenRename}
+            onDeleteConversation={setDeleting}
+            onOpenSettings={() => {
+              setSettingsOpen(true)
+              setSidebarOpen(false)
+            }}
+            onOpenAbout={() => {
+              setAboutOpen(true)
+              setSidebarOpen(false)
+            }}
+          />
+        }
+        header={
+          <Header
+            mode={mode}
+            modelName={apiSettings.model}
+            apiStatus={apiStatus}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        }
+      >
+        <ChatView
+          conversation={store.active}
+          mode={mode}
+          status={chat.status}
+          input={chat.input}
+          isGenerating={chat.isGenerating}
+          needsApiKey={!configured}
+          onInputChange={chat.setInput}
+          onSend={() => void chat.send()}
+          onStop={chat.stop}
+          onRegenerate={() => void chat.regenerate()}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      </AppLayout>
 
-      <main className="flex flex-1 items-center justify-center overflow-auto p-6">
-        <section className="w-full max-w-lg rounded-card border border-line bg-surface p-6 shadow-sm">
-          <h1 className="text-lg font-semibold">阶段 1 骨架已就绪</h1>
-          <p className="mt-1 text-sm text-ink-soft">{appConfig.appSubtitle}</p>
+      <ApiSettingsModal
+        open={settingsOpen}
+        settings={apiSettings}
+        apiKey={apiKey}
+        onClose={() => setSettingsOpen(false)}
+        onSave={handleSaveSettings}
+        onClearApiKey={handleClearApiKey}
+      />
 
-          <dl className="mt-5 space-y-2 text-sm">
-            <div className="flex justify-between gap-4 border-b border-line-soft pb-2">
-              <dt className="text-ink-muted">前端框架</dt>
-              <dd>React 19 + Vite + TypeScript</dd>
-            </div>
-            <div className="flex justify-between gap-4 border-b border-line-soft pb-2">
-              <dt className="text-ink-muted">样式方案</dt>
-              <dd>Tailwind CSS v4</dd>
-            </div>
-            <div className="flex justify-between gap-4 border-b border-line-soft pb-2">
-              <dt className="text-ink-muted">默认模型</dt>
-              <dd>
-                {apiConfig.defaultProvider} / {apiConfig.defaultModel}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-ink-muted">转发端点</dt>
-              <dd className="truncate font-mono text-xs">{apiConfig.endpoint}</dd>
-            </div>
-          </dl>
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
 
-          <p className="mt-5 rounded-lg bg-brand-soft p-3 text-xs text-ink-soft">
-            API Key 仅由用户在「API 设置」中输入，仅保存在本机浏览器，不写入源码、不上传云端。
-          </p>
-        </section>
-      </main>
-    </div>
+      <ConfirmDialog
+        open={pendingMode !== null}
+        title="切换模式将创建一个新对话"
+        description={
+          pendingMode
+            ? `当前对话已有内容。切换后会新建一个${modeLabel[pendingMode]}对话，原对话仍保留在历史记录中。`
+            : undefined
+        }
+        confirmText={pendingMode ? `新建${modeLabel[pendingMode]}对话` : '确定'}
+        cancelText="取消"
+        onConfirm={() => {
+          if (pendingMode) switchMode(pendingMode)
+          setPendingMode(null)
+        }}
+        onCancel={() => setPendingMode(null)}
+      />
+
+      <Modal
+        open={renaming !== null}
+        title="重命名对话"
+        onClose={() => setRenaming(null)}
+        panelClassName="sm:max-w-[400px]"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setRenaming(null)}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                if (renaming) store.rename(renaming.id, renameValue)
+                setRenaming(null)
+              }}
+            >
+              保存
+            </Button>
+          </>
+        }
+      >
+        <input
+          type="text"
+          value={renameValue}
+          onChange={(event) => setRenameValue(event.target.value)}
+          maxLength={40}
+          autoFocus
+          className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-brand/60"
+        />
+      </Modal>
+
+      <ConfirmDialog
+        open={deleting !== null}
+        title="确定删除此对话吗？"
+        description={deleting ? `「${deleting.title}」将被永久删除，且无法恢复。` : undefined}
+        confirmText="删除"
+        cancelText="取消"
+        danger
+        onConfirm={() => {
+          if (deleting) store.remove(deleting.id)
+          setDeleting(null)
+        }}
+        onCancel={() => setDeleting(null)}
+      />
+    </>
   )
 }

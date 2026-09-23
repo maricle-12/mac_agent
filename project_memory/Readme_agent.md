@@ -26,7 +26,7 @@
 - API Key：默认 sessionStorage；用户主动勾选「在此设备记住」后才存 localStorage
 - Worker 不保存任何 Key 与聊天内容，不写日志，不使用 KV / D1
 
-## 目录职责（规划，随阶段落地）
+## 目录职责（✅ 已实现 / ⏳ 计划中）
 
 ```
 demo/
@@ -36,18 +36,31 @@ demo/
 ├─ .env.development          # 本地开发端点（指向 localhost:8787 Worker）
 ├─ .env.production           # 生产端点（部署 Worker 后填写）
 ├─ public/_redirects         # Cloudflare Pages SPA 回退，避免刷新 404
+├─ scripts/
+│  ├─ ui-check.mjs           # ✅ 无依赖 UI 自动化检查（CDP，12 项断言 + 控制台错误）
+│  └─ screenshot.mjs         # ✅ 无依赖页面截图工具（输出到 screenshots/，已 gitignore）
 ├─ src/
-│  ├─ config/                # 品牌与 API 配置（app.ts / api.ts）
-│  ├─ types/                 # 公共类型（chat / conversation / settings）
-│  ├─ prompts/               # 教师 / 学生 System Prompt 与 getSystemPrompt()
-│  ├─ db/                    # IndexedDB 封装（idb）
-│  ├─ services/              # chatApi（SSE 解析）、storage（Key 与偏好读写）
-│  ├─ hooks/                 # useChat / useApiSettings / useConversations
-│  ├─ components/            # layout / chat / settings / history / common
-│  └─ App.tsx                # 组装层，只做组合不写业务
-├─ worker/                   # Cloudflare Worker（独立 package.json + wrangler.toml）
+│  ├─ config/                # ✅ 品牌与 API 配置、快捷卡片文案
+│  ├─ types/                 # ✅ 公共类型（chat / conversation / settings）
+│  ├─ utils/                 # ✅ cn / id / clipboard / time / title / markdown
+│  ├─ prompts/               # ⏳ 阶段 8：教师 / 学生 System Prompt 与 getSystemPrompt()
+│  ├─ db/                    # ⏳ 阶段 9：IndexedDB 封装（idb）
+│  ├─ services/              # ⏳ 阶段 3 / 7：storage（Key 与偏好）、chatApi（SSE 解析）
+│  ├─ hooks/                 # ✅ useConversations / useChat（内存实现，接口已定型）
+│  ├─ mocks/                 # ✅ 阶段 2 临时模拟数据（阶段 7 / 9 后删除）
+│  ├─ components/            # ✅ layout / chat / settings / history / common
+│  └─ App.tsx                # ✅ 组装层，只做状态编排与弹窗调度
+├─ worker/                   # ⏳ 阶段 4：Cloudflare Worker（独立 package.json + wrangler.toml）
 └─ project_memory/           # 项目长期记忆
 ```
+
+## 验证手段
+
+- `npm run build`：`tsc -b` + `vite build`，必须零类型错误。
+- `npm run check:ui`：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
+  三档桌面分辨率布局、移动端抽屉，并汇总 console 错误与未捕获异常。
+- `node scripts/screenshot.mjs`：生成桌面 / 空状态 / 设置弹窗 / 移动端截图。
+- 当前模型不支持读取图片，视觉验收需依靠 `ui-check.mjs` 的数值断言 + 用户查看截图。
 
 ## 关键约束（不可违反）
 

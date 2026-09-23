@@ -60,3 +60,127 @@
     scrollbar-color: #d4d4d8 transparent;
   }
 }
+
+/* ============================================================
+   Markdown 正文排版（.md-body）
+   组件级样式（代码块、表格、链接）在 MarkdownRenderer.tsx 中，
+   这里只处理纯排版，避免在 React 组件里堆大量 class。
+   ============================================================ */
+.md-body {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--color-ink);
+  word-break: break-word;
+}
+
+.md-body > :first-child {
+  margin-top: 0;
+}
+
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+
+.md-body p {
+  margin: 0.7rem 0;
+}
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  margin: 1.35rem 0 0.6rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.md-body h1 {
+  font-size: 1.2rem;
+}
+
+.md-body h2 {
+  font-size: 1.08rem;
+}
+
+.md-body h3,
+.md-body h4 {
+  font-size: 0.98rem;
+}
+
+.md-body ul,
+.md-body ol {
+  margin: 0.6rem 0;
+  padding-left: 1.35rem;
+}
+
+.md-body ul {
+  list-style: disc;
+}
+
+.md-body ol {
+  list-style: decimal;
+}
+
+.md-body li {
+  margin: 0.3rem 0;
+}
+
+.md-body li > p {
+  margin: 0.2rem 0;
+}
+
+.md-body li::marker {
+  color: var(--color-ink-muted);
+}
+
+.md-body strong {
+  font-weight: 600;
+}
+
+.md-body em {
+  font-style: italic;
+}
+
+.md-body hr {
+  margin: 1.4rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.md-body blockquote {
+  margin: 0.9rem 0;
+  border-left: 3px solid var(--color-line);
+  padding-left: 0.9rem;
+  color: var(--color-ink-soft);
+}
+
+.md-body blockquote p {
+  margin: 0.35rem 0;
+}
+
+/* 数学公式：过长时允许横向滚动，避免撑破布局 */
+.md-body .katex-display {
+  margin: 0.9rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.15rem 0;
+}
+
+/* 流式输出时的光标 */
+.md-streaming > :last-child::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -0.15em;
+  background-color: var(--color-brand);
+  animation: md-caret 1s steps(2, start) infinite;
+}
+
+@keyframes md-caret {
+  to {
+    visibility: hidden;
+  }
+}
+

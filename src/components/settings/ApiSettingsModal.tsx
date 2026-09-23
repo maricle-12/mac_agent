@@ -1,0 +1,203 @@
+import { useEffect, useState } from 'react'
+
+import { Button } from '@/components/common/Button'
+import { EyeIcon, EyeOffIcon, InfoIcon } from '@/components/common/icons'
+import { Modal } from '@/components/common/Modal'
+import { apiConfig, apiProviders } from '@/config/api'
+import type { ApiSettings } from '@/types/settings'
+
+export interface ApiSettingsModalProps {
+  open: boolean
+  settings: ApiSettings
+  apiKey: string
+  /** 测试连接是否可用（Worker 未部署时为 false） */
+  testEnabled?: boolean
+  onClose: () => void
+  onSave: (settings: ApiSettings, apiKey: string) => void
+  onClearApiKey: () => void
+}
+
+const labelClass = 'block text-[13px] font-medium text-ink'
+const inputClass =
+  'mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-brand/60'
+
+export function ApiSettingsModal({
+  open,
+  settings,
+  apiKey,
+  testEnabled = false,
+  onClose,
+  onSave,
+  onClearApiKey,
+}: ApiSettingsModalProps) {
+  const [form, setForm] = useState<ApiSettings>(settings)
+  const [key, setKey] = useState(apiKey)
+  const [showKey, setShowKey] = useState(false)
+
+  // 每次打开时用最新的外部设置重置表单
+  useEffect(() => {
+    if (!open) return
+    setForm(settings)
+    setKey(apiKey)
+    setShowKey(false)
+  }, [open, settings, apiKey])
+
+  const provider = apiProviders.find((item) => item.id === form.provider) ?? apiProviders[0]
+
+  const handleProviderChange = (providerId: string) => {
+    const next = apiProviders.find((item) => item.id === providerId)
+    if (!next) return
+    setForm((prev) => ({ ...prev, provider: next.id, baseUrl: next.baseUrl, model: next.model }))
+  }
+
+  const handleSave = () => {
+    onSave({ ...form, baseUrl: form.baseUrl.trim().replace(/\/+$/, '') }, key.trim())
+    onClose()
+  }
+
+  return (
+    <Modal
+      open={open}
+      title="API 设置"
+      description="使用本应用需要你自己的模型 API Key"
+      onClose={onClose}
+      panelClassName="sm:max-w-[520px]"
+      footer={
+        <>
+          {apiKey ? (
+            <Button
+              variant="ghost"
+              className="mr-auto text-danger hover:bg-danger/5"
+              onClick={onClearApiKey}
+            >
+              清除 API Key
+            </Button>
+          ) : null}
+          <Button variant="ghost" onClick={onClose}>
+            取消
+          </Button>
+          <Button variant="primary" onClick={handleSave}>
+            保存
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <div>
+          <label className={labelClass} htmlFor="api-provider">
+            模型服务
+          </label>
+          <select
+            id="api-provider"
+            value={form.provider}
+            onChange={(event) => handleProviderChange(event.target.value)}
+            className={inputClass}
+          >
+            {apiProviders.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className={labelClass} htmlFor="api-key">
+            API Key
+          </label>
+          <div className="relative">
+            <input
+              id="api-key"
+              type={showKey ? 'text' : 'password'}
+              value={key}
+              onChange={(event) => setKey(event.target.value)}
+              placeholder="sk-xxxxxxxxxxxxxxxx"
+              autoComplete="off"
+              spellCheck={false}
+              className={`${inputClass} pr-10 font-mono`}
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((prev) => !prev)}
+              aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+              className="absolute top-1/2 right-2 -translate-y-1/2 rounded-md p-1.5 text-ink-muted transition-colors hover:text-ink"
+            >
+              {showKey ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label className={labelClass} htmlFor="api-base-url">
+            Base URL
+          </label>
+          <input
+            id="api-base-url"
+            type="text"
+            value={form.baseUrl}
+            onChange={(event) => setForm((prev) => ({ ...prev, baseUrl: event.target.value }))}
+            placeholder={apiConfig.defaultBaseUrl}
+            spellCheck={false}
+            className={`${inputClass} font-mono text-[13px]`}
+          />
+        </div>
+
+        <div>
+          <label className={labelClass} htmlFor="api-model">
+            Model
+          </label>
+          <input
+            id="api-model"
+            type="text"
+            value={form.model}
+            onChange={(event) => setForm((prev) => ({ ...prev, model: event.target.value }))}
+            placeholder={apiConfig.defaultModel}
+            spellCheck={false}
+            list="api-model-options"
+            className={`${inputClass} font-mono text-[13px]`}
+          />
+          <datalist id="api-model-options">
+            {provider.models.map((model) => (
+              <option key={model} value={model} />
+            ))}
+          </datalist>
+        </div>
+
+        <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-canvas/60 p-3">
+          <input
+            type="checkbox"
+            checked={form.rememberApiKey}
+            onChange={(event) =>
+              setForm((prev) => ({ ...prev, rememberApiKey: event.target.checked }))
+            }
+            className="mt-0.5 size-4 accent-brand"
+          />
+          <span>
+            <span className="block text-[13px] font-medium text-ink">在此设备记住 API Key</span>
+            <span className="mt-0.5 block text-[12px] leading-5 text-ink-soft">
+              不勾选时，API Key 仅保存在当前会话（sessionStorage），关闭浏览器后自动失效。
+              勾选后才会保存到本机浏览器（localStorage），方便下次打开无需重新输入。
+            </span>
+          </span>
+        </label>
+
+        <div className="flex items-start gap-2 rounded-lg bg-brand-soft p-3 text-[12px] leading-5 text-ink-soft">
+          <InfoIcon className="mt-px size-4 shrink-0 text-brand" />
+          <p>
+            API Key 仅用于调用您选择的模型服务。本应用不会将 API Key 保存到云端数据库，
+            也不会写入源码或日志。所有聊天记录只保存在你自己的浏览器中。
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 border-t border-line-soft pt-3">
+          <Button variant="secondary" size="sm" disabled={!testEnabled}>
+            测试连接
+          </Button>
+          <span className="text-[12px] text-ink-muted">
+            {testEnabled ? '使用一次最小请求验证 Key 是否可用' : 'Worker 部署后启用（阶段 5）'}
+          </span>
+        </div>
+      </div>
+    </Modal>
+  )
+}
