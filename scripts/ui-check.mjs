@@ -167,6 +167,77 @@ async function probeWorker() {
   }
 }
 
+// ------------------------------------------------- 流式输出用的替身（stub）
+
+/**
+ * 安装一个假的 /api/chat 流式响应，用来确定性地验证前端流式渲染。
+ * 同时会记录 AbortSignal 是否被触发，用于验证「停止生成」是否真的中断了请求。
+ */
+async function installStreamStub(ctx, parts, delayMs, firstDelayMs = 350) {
+  await ctx.eval(`
+    window.__origFetch = window.__origFetch || window.fetch;
+    window.__streamAborted = false;
+    window.__streamChunks = 0;
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (!url.includes('/api/chat')) return window.__origFetch(input, init);
+      const encoder = new TextEncoder();
+      const parts = ${JSON.stringify(parts)};
+      const delay = ${delayMs};
+      const firstDelay = ${firstDelayMs};
+      const stream = new ReadableStream({
+        async start(controller) {
+          if (init && init.signal) {
+            init.signal.addEventListener('abort', () => {
+              window.__streamAborted = true;
+            });
+          }
+          controller.enqueue(encoder.encode(': keep-alive\\n\\n'));
+          // 先停一会儿再发第一个增量，用来观察「AI 正在思考」状态
+          await new Promise((resolve) => setTimeout(resolve, firstDelay));
+          for (const part of parts) {
+            if (window.__streamAborted) break;
+            const payload = JSON.stringify({ choices: [{ delta: { content: part } }] });
+            controller.enqueue(encoder.encode('data: ' + payload + '\\n\\n'));
+            window.__streamChunks += 1;
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+          try {
+            controller.enqueue(encoder.encode('data: [DONE]\\n\\n'));
+          } catch {}
+          try {
+            controller.close();
+          } catch {}
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    };
+    return true;
+  `)
+}
+
+async function removeStreamStub(ctx) {
+  await ctx.eval(`
+    if (window.__origFetch) {
+      window.fetch = window.__origFetch;
+      delete window.__origFetch;
+    }
+    return true;
+  `)
+}
+
+/** 读取当前最后一条 AI 回答的纯文本 */
+const LAST_ANSWER_EXPR = `
+  const bodies = $$('.md-body');
+  return bodies.length ? bodies[bodies.length - 1].innerText : '';
+`
+
+const STREAM_PARTS = ['分类', '与整理', '是二年级', '数学的', '重要内容', '。']
+const STREAM_TEXT = STREAM_PARTS.join('')
+
 // ---------------------------------------------------------------- 测试场景
 
 step('首屏渲染：标题、模式、会话列表', async (ctx) => {
@@ -264,55 +335,191 @@ step('点击快捷卡片 → 内容填入输入框', async (ctx) => {
   ctx.assert(value.includes('教学设计'), `输入框未填入内容: ${value.slice(0, 40)}`)
 })
 
-step('发送消息 → 用户气泡 + AI 模拟回答', async (ctx) => {
-  await ctx.eval(`return setValue('textarea', '帮我设计一节二年级数学课');`)
+step('配置 API Key（供后续流式用例使用）', async (ctx) => {
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  await ctx.eval(`return setValue('#api-key', 'sk-ui-check-session-key');`)
   await sleep(150)
-  await ctx.eval(`return pressEnter('textarea');`)
-  await sleep(250)
-
-  const thinking = await ctx.eval(`return document.body.innerText.includes('AI 正在思考');`)
-  ctx.assert(thinking, '未显示「AI 正在思考」')
-
-  const userBubble = await ctx.eval(`
-    return $$('.bg-brand').some((el) => (el.textContent||'').includes('帮我设计一节二年级数学课'));
+  // 不勾选「记住此设备」，保持 session 存储
+  await ctx.eval(`
+    const box = $('input[type="checkbox"]');
+    if (box && box.checked) box.click();
+    return true;
   `)
-  ctx.assert(userBubble, '用户消息气泡未出现')
+  await sleep(150)
+  await ctx.eval(`return clickText('保存');`)
+  await sleep(350)
+  ctx.assert(
+    await ctx.eval(`return document.body.innerText.includes('待验证');`),
+    '配置 Key 后顶部状态未更新',
+  )
+})
 
-  await ctx.waitFor(`return document.body.innerText.includes('阶段 2 的模拟回答');`, 8000)
-  const title = await ctx.eval(`
-    return $$('button').map((el) => el.textContent || '').find((t) => t.includes('二年级数学课')) ?? '';
-  `)
-  ctx.assert(title.length > 0, '首条消息未自动生成会话标题')
+step('探测转发端点是否已配置', async (ctx) => {
+  // 生产构建在阶段 14 前 VITE_API_ENDPOINT 仍是占位符，
+  // 此时 app 会在本地直接拒绝请求，依赖真实端点的用例应跳过而不是失败。
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  await ctx.eval(`return setValue('#api-key', 'sk-endpoint-probe');`)
+  await sleep(150)
+  await ctx.eval(`return clickText('测试连接');`)
+  await ctx.waitFor(
+    `return /连接成功|API Key 不正确|尚未配置模型转发地址|网络连接失败|余额不足/.test(document.body.innerText);`,
+    25000,
+  )
+
+  const missing = await ctx.eval(
+    `return document.body.innerText.includes('尚未配置模型转发地址');`,
+  )
+  ctx.endpointConfigured = !missing
+  if (!missing) {
+    // 端点已配置 → 这次探测会真的发一次请求并得到 4xx
+    ctx.tolerateNetworkError()
+  }
+
+  await ctx.eval(`return clickExact('取消');`)
+  await sleep(200)
+})
+
+step('发送消息 → 流式增量渲染（stub SSE）', async (ctx) => {
+  if (ctx.endpointConfigured === false) {
+    ctx.skip('当前构建的 VITE_API_ENDPOINT 仍是占位符，无法发起聊天请求（阶段 14 部署后生效）')
+  }
+  // 前置条件：上一步的生成必须已经结束，否则 send() 会被安全守卫拦下
+  await ctx.waitFor(`return !byText('停止生成');`, 15000)
+
+  await installStreamStub(ctx, STREAM_PARTS, 200)
+  try {
+    await ctx.eval(`return setValue('textarea', '什么是分类与整理');`)
+    await sleep(150)
+    await ctx.eval(`return pressEnter('textarea');`)
+    await sleep(200)
+
+    ctx.assert(
+      await ctx.eval(`return document.body.innerText.includes('AI 正在思考');`),
+      '未显示「AI 正在思考」',
+    )
+    ctx.assert(
+      await ctx.eval(
+        `return $$('.bg-brand').some((el) => (el.textContent||'').includes('什么是分类与整理'));`,
+      ),
+      '用户消息气泡未出现',
+    )
+
+    // 前后采样两次：内容必须是在增长，而不是一次性出现
+    await sleep(300)
+    const first = await ctx.eval(LAST_ANSWER_EXPR)
+    await sleep(400)
+    const second = await ctx.eval(LAST_ANSWER_EXPR)
+    ctx.assert(first.length > 0, '首个增量没有渲染出来')
+    ctx.assert(
+      second.length > first.length,
+      `回答没有随流式增长（${first.length} → ${second.length}），可能是一次性渲染`,
+    )
+
+    await ctx.waitFor(`return document.body.innerText.includes('${STREAM_TEXT}');`, 10000)
+    // 最后一句话出现时可能还没处理完 [DONE]，等状态真正回到空闲
+    await ctx.waitFor(
+      `return !byText('停止生成') && Boolean(byText('重新生成'));`,
+      8000,
+    )
+    ctx.assert(
+      await ctx.eval(`return !document.body.innerText.includes('AI 正在思考');`),
+      '流结束后仍在显示「正在思考」',
+    )
+    ctx.assert(
+      await ctx.eval(`return Boolean(byText('复制')) && Boolean(byText('重新生成'));`),
+      '回答完成后未出现「复制」与「重新生成」',
+    )
+
+    const title = await ctx.eval(`
+      return $$('button').map((el) => el.textContent || '').find((t) => t.includes('什么是分类与整理')) ?? '';
+    `)
+    ctx.assert(title.length > 0, '首条消息未自动生成会话标题')
+  } finally {
+    await ctx.waitFor(`return !byText('停止生成');`, 15000).catch(() => {})
+    await removeStreamStub(ctx)
+  }
+})
+
+step('停止生成 → 中断请求并保留已生成内容', async (ctx) => {
+  if (ctx.endpointConfigured === false) {
+    ctx.skip('端点未配置，跳过停止生成用例')
+  }
+  await ctx.waitFor(`return !byText('停止生成');`, 15000)
+
+  await installStreamStub(ctx, STREAM_PARTS, 240)
+  try {
+    await ctx.eval(`return setValue('textarea', '第二个问题');`)
+    await sleep(150)
+    await ctx.eval(`return pressEnter('textarea');`)
+    await sleep(700)
+
+    ctx.assert(
+      await ctx.eval(`return Boolean(byText('停止生成'));`),
+      '生成中未显示「停止生成」',
+    )
+    ctx.assert(
+      await ctx.eval(
+        `return $$('.bg-brand').some((el) => (el.textContent||'').includes('第二个问题'));`,
+      ),
+      '第二条用户消息未出现',
+    )
+
+    const before = await ctx.eval(LAST_ANSWER_EXPR)
+    ctx.assert(before.length > 0, '停止前没有已生成的内容可供保留')
+
+    await ctx.eval(`return clickText('停止生成');`)
+    await sleep(500)
+
+    ctx.assert(await ctx.eval(`return !byText('停止生成');`), '点击停止后仍显示「停止生成」')
+
+    const after = await ctx.eval(LAST_ANSWER_EXPR)
+    ctx.assert(after.length > 0, '停止后已生成的内容被清空')
+    ctx.assert(after.length >= before.length, '停止后内容反而变少了')
+
+    ctx.assert(
+      await ctx.eval(`return window.__streamAborted === true;`),
+      '停止生成没有传导到请求（AbortSignal 未触发）',
+    )
+
+    await sleep(800)
+    const later = await ctx.eval(LAST_ANSWER_EXPR)
+    ctx.assert(later === after, '停止之后内容仍在增长，说明没有真正中断')
+  } finally {
+    await removeStreamStub(ctx)
+  }
 })
 
 step('重新生成：不重复添加用户消息', async (ctx) => {
-  const before = await ctx.eval(`
-    return $$('.bg-brand').filter((el) => (el.textContent||'').includes('帮我设计')).length;
-  `)
-  await ctx.eval(`return clickText('重新生成');`)
-  await sleep(1200)
-  const after = await ctx.eval(`
-    return {
-      userCount: $$('.bg-brand').filter((el) => (el.textContent||'').includes('帮我设计')).length,
-      hasAnswer: document.body.innerText.includes('阶段 2 的模拟回答'),
-    };
-  `)
-  ctx.assert(before === 1, `重新生成前用户消息数异常: ${before}`)
-  ctx.assert(after.userCount === 1, `重新生成后用户消息被重复添加: ${after.userCount}`)
-  ctx.assert(after.hasAnswer, '重新生成后没有回答')
-})
+  if (ctx.endpointConfigured === false) {
+    ctx.skip('端点未配置，跳过重新生成用例')
+  }
+  await ctx.waitFor(`return !byText('停止生成');`, 15000)
 
-step('停止生成按钮可用', async (ctx) => {
-  await ctx.eval(`return setValue('textarea', '第二个问题');`)
-  await sleep(120)
-  await ctx.eval(`return pressEnter('textarea');`)
-  await sleep(200)
-  const stopVisible = await ctx.eval(`return Boolean(byText('停止生成'));`)
-  ctx.assert(stopVisible, '生成中未显示「停止生成」')
-  await ctx.eval(`return clickText('停止生成');`)
-  await sleep(600)
-  const stopped = await ctx.eval(`return !byText('停止生成');`)
-  ctx.assert(stopped, '点击停止后仍在生成状态')
+  await installStreamStub(ctx, STREAM_PARTS, 120)
+  try {
+    const before = await ctx.eval(
+      `return $$('.bg-brand').filter((el) => (el.textContent||'').includes('第二个问题')).length;`,
+    )
+    ctx.assert(before === 1, `重新生成前用户消息数量异常: ${before}`)
+
+    await ctx.eval(`return clickText('重新生成');`)
+    await ctx.waitFor(`return document.body.innerText.includes('${STREAM_TEXT}');`, 10000)
+    await ctx.waitFor(`return !byText('停止生成');`, 8000)
+
+    const after = await ctx.eval(
+      `return $$('.bg-brand').filter((el) => (el.textContent||'').includes('第二个问题')).length;`,
+    )
+    ctx.assert(after === 1, `重新生成后用户消息被重复添加: ${before} → ${after}`)
+    ctx.assert(
+      await ctx.eval(`return !byText('停止生成');`),
+      '重新生成结束后仍显示「停止生成」',
+    )
+  } finally {
+    await ctx.waitFor(`return !byText('停止生成');`, 15000).catch(() => {})
+    await removeStreamStub(ctx)
+  }
 })
 
 step('API 设置弹窗：字段与隐私提示', async (ctx) => {

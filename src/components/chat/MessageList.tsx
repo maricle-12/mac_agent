@@ -42,7 +42,16 @@ export function MessageList({ messages, status, logo, onRegenerate }: MessageLis
   }
 
   const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assistant')?.id
-  const waitingFirstToken = status === 'sending'
+  const lastMessage = messages[messages.length - 1]
+  const answerStarted =
+    lastMessage?.role === 'assistant' && lastMessage.content.trim().length > 0
+
+  // 已开始生成、但第一个增量还没到：用轻量提示占位，不显示空气泡
+  const generating = status === 'sending' || status === 'streaming'
+  const showThinking = generating && !answerStarted
+  const visibleMessages = showThinking
+    ? messages.filter((message) => message.id !== lastMessage?.id)
+    : messages
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -56,22 +65,20 @@ export function MessageList({ messages, status, logo, onRegenerate }: MessageLis
           data-testid="message-content"
           className="mx-auto w-full max-w-[860px] space-y-6 px-4 py-6 sm:px-6"
         >
-          {messages.map((message) => (
+          {visibleMessages.map((message) => (
             <MessageBubble
               key={message.id}
               message={message}
               logo={logo}
-              streaming={status === 'streaming' && message.id === lastAssistantId}
+              streaming={status === 'streaming' && message.id === lastAssistantId && answerStarted}
               canRegenerate={
-                message.role === 'assistant' &&
-                message.id === lastAssistantId &&
-                status === 'idle'
+                message.role === 'assistant' && message.id === lastAssistantId && !generating
               }
               onRegenerate={onRegenerate}
             />
           ))}
 
-          {waitingFirstToken ? (
+          {showThinking ? (
             <div className="flex items-center gap-3">
               <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-brand text-[11px] font-semibold text-white">
                 {logo}

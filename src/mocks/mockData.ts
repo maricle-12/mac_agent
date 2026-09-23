@@ -1,9 +1,9 @@
-import type { AgentMode, Conversation } from '@/types/conversation'
+import type { Conversation } from '@/types/conversation'
 import { createId } from '@/utils/id'
 
 /**
- * 阶段 2 临时模拟数据。
- * 阶段 9（IndexedDB）与阶段 7（真实流式回答）接入后，本文件会被移除。
+ * 阶段 2 临时模拟数据（仅用于在没有历史记录时提供示例会话，阶段 9 接入 IndexedDB 后移除）。
+ * 真实的模型回答从阶段 7 起由 DeepSeek 流式返回，这里不再生成任何回答。
  */
 
 function minutesAgo(minutes: number): number {
@@ -198,7 +198,4 @@ $$
 `
 }
 
-/** 阶段 2 的模拟回答：按模式返回一段内容丰富的 Markdown */
-export function createMockReply(mode: AgentMode, _userText: string): string {
-  return mode === 'teacher' ? createTeacherMock() : createStudentMock()
-}
+/** 阶段 2 的模拟回答：按模式返回一段内容丰富的 Markdown（阶段 7 起已不再使用） */

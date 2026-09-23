@@ -38,4 +38,9 @@ export const apiConfig = {
   maxTokens: 0,
   /** 测试连接时的超时时间（毫秒） */
   testTimeoutMs: 20_000,
+  /**
+   * 流式输出空闲超时（毫秒）：超过该时间没有收到任何增量就中断本次生成，
+   * 避免流挂死后用户一直看到「正在思考」。
+   */
+  streamIdleTimeoutMs: 60_000,
 } as const

@@ -28,7 +28,7 @@ export default function App() {
   const [mode, setMode] = useState<AgentMode>(() => loadPreferences().mode)
   const store = useConversations(mode)
   const api = useApiSettings()
-  const chat = useChat({ store, mode })
+  const chat = useChat({ store, mode, apiKey: api.apiKey, settings: api.settings })
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)

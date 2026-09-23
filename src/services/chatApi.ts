@@ -1,5 +1,5 @@
 import { apiConfig } from '@/config/api'
-import type { ApiMessage } from '@/types/chat'
+import type { ApiMessage, ChatMessage } from '@/types/chat'
 import type { ApiSettings } from '@/types/settings'
 
 /**
@@ -131,6 +131,46 @@ export async function requestChatCompletion(
   }
 
   return response
+}
+
+// ---------------------------------------------------------------- 上下文构造
+
+export interface BuildMessagesOptions {
+  /** System Prompt（阶段 8 由 src/prompts 提供；为空时不插入 system 消息） */
+  systemPrompt?: string
+  /** 最多携带多少条历史消息（不含 system） */
+  maxContextMessages: number
+}
+
+/**
+ * 把本地会话历史整理成发给模型的 messages。
+ *
+ * 要点：
+ * - 历史上只存了 user / assistant；system 在每次请求时动态插入，
+ *   因此修改 Prompt 后新请求立即生效，也不会在历史里留下旧 Prompt。
+ * - 只取最近 maxContextMessages 条，避免上下文无限增长。
+ * - 过滤掉空内容与出错的消息（例如被中断的空回答）。
+ * - **不再单独添加当前用户消息**：调用方传入的历史里已经包含它，
+ *   重复添加会导致模型看到两遍同一个问题。
+ */
+export function buildRequestMessages(
+  history: ChatMessage[],
+  options: BuildMessagesOptions,
+): ApiMessage[] {
+  const usable: ApiMessage[] = history
+    .filter((message) => {
+      if (message.role !== 'user' && message.role !== 'assistant') return false
+      if (message.error) return false
+      return message.content.trim().length > 0
+    })
+    .map((message) => ({ role: message.role, content: message.content }))
+
+  const trimmed = usable.slice(-options.maxContextMessages)
+
+  if (options.systemPrompt && options.systemPrompt.trim()) {
+    return [{ role: 'system', content: options.systemPrompt }, ...trimmed]
+  }
+  return trimmed
 }
 
 // ---------------------------------------------------------------- 非流式响应

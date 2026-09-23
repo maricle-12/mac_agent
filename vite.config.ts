@@ -13,6 +13,11 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    watch: {
+      // worker/ 是独立的子项目（有自己的 tsconfig 与 node_modules）。
+      // 不排除的话，改动 worker 会让 Vite 清缓存并强制整页刷新，开发时会莫名其妙地闪。
+      ignored: ['**/worker/**', '**/screenshots/**', '**/project_memory/**'],
+    },
   },
   build: {
     outDir: 'dist',

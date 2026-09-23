@@ -17,6 +17,7 @@ export interface ConversationStore {
   clearAll: () => void
   appendMessage: (conversationId: string, message: ChatMessage) => void
   updateMessage: (conversationId: string, messageId: string, patch: Partial<ChatMessage>) => void
+  removeMessage: (conversationId: string, messageId: string) => void
   removeMessagesAfter: (conversationId: string, messageId: string) => void
 }
 
@@ -128,6 +129,19 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
     [],
   )
 
+  const removeMessage = useCallback((conversationId: string, messageId: string) => {
+    setConversations((prev) =>
+      prev.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              messages: conversation.messages.filter((message) => message.id !== messageId),
+            }
+          : conversation,
+      ),
+    )
+  }, [])
+
   const removeMessagesAfter = useCallback((conversationId: string, messageId: string) => {
     setConversations((prev) =>
       prev.map((conversation) => {
@@ -152,6 +166,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
       clearAll,
       appendMessage,
       updateMessage,
+      removeMessage,
       removeMessagesAfter,
     }),
     [
@@ -166,6 +181,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
       clearAll,
       appendMessage,
       updateMessage,
+      removeMessage,
       removeMessagesAfter,
     ],
   )

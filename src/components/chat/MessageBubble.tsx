@@ -57,26 +57,39 @@ export function MessageBubble({
         {logo}
       </span>
       <div className="min-w-0 flex-1">
-        {message.error ? (
-          <div className="rounded-lg border border-danger/25 bg-danger/5 px-3.5 py-2.5 text-sm text-danger">
-            {message.error}
-          </div>
-        ) : (
+        {message.content ? (
           <div className={cn(streaming && 'md-streaming')}>
             <MarkdownRenderer content={message.content} />
           </div>
-        )}
+        ) : null}
+
+        {message.error ? (
+          <div
+            className={cn(
+              'rounded-lg border border-danger/25 bg-danger/5 px-3.5 py-2.5 text-sm text-danger',
+              message.content && 'mt-2',
+            )}
+          >
+            {message.error}
+          </div>
+        ) : null}
 
         {!streaming ? (
           <div className="mt-2 flex items-center gap-1">
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[12px] text-ink-muted transition-colors hover:bg-canvas hover:text-ink"
-            >
-              {copied ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />}
-              {copied ? '已复制' : '复制'}
-            </button>
+            {message.content ? (
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[12px] text-ink-muted transition-colors hover:bg-canvas hover:text-ink"
+              >
+                {copied ? (
+                  <CheckIcon className="size-3.5 text-success" />
+                ) : (
+                  <CopyIcon className="size-3.5" />
+                )}
+                {copied ? '已复制' : '复制'}
+              </button>
+            ) : null}
             {canRegenerate && onRegenerate ? (
               <button
                 type="button"

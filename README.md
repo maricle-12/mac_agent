@@ -209,8 +209,12 @@ set DEEPSEEK_API_KEY=sk-xxxx && npm run check:stream      # CMD
 node scripts/screenshot.mjs http://localhost:5173/
 ```
 
-`ui-check.mjs` 会检查 19 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
+`ui-check.mjs` 会检查 20 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
 修改 UI 后建议先跑一遍，能第一时间发现渲染或交互回归。
+
+其中包含**流式输出验证**（用桩 SSE 确定性复现）：断言「AI 正在思考」状态、用户气泡、
+**回答内容随时间增长**（证明是流式而不是一次性渲染）、停止生成后内容保留且请求真被中断
+（AbortSignal 触发）、重新生成不重复添加用户消息。
 
 其中包含**本地存储行为验证**：未勾选「记住此设备」时清空 `sessionStorage` 后 Key 必须消失；
 勾选后必须跨会话保留；「清除 API 配置」后必须两处都清干净。
@@ -358,7 +362,8 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 | 4 | 建立 Cloudflare Worker | ✅ 已完成 |
 | 5 | 打通 DeepSeek 非流式请求 | ✅ 已完成 |
 | 6 | 改为 Streaming（SSE 透传） | ✅ 已完成 |
-| 7 | 网页接入 Streaming + 停止生成 | ⬜ |
+| 7 | 网页接入 Streaming + 停止生成 | ✅ 已完成 |
+| 8 | 教师 / 学生 System Prompt | ⬜ |
 | 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 7 | 网页接入 Streaming + 停止生成 | ⬜ |
 | 8 | 教师 / 学生 System Prompt | ⬜ |
@@ -464,6 +469,18 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 
 `npm run check:sse` 会逐字节切分真实格式的 SSE 文本（JSON 与中文都被切开），
 并随机切分 200 次，验证解析结果始终正确。
+
+### 前端侧的配套处理
+
+| 场景 | 处理方式 |
+| --- | --- |
+| 增量渲染性能 | 增量先写入 ref，用 `requestAnimationFrame` 合并刷新，避免每个 token 都重解析 Markdown |
+| 首个增量到达前 | 显示轻量的「AI 正在思考…」，到达后立刻替换为正文（不显示空白气泡） |
+| 停止生成 | `AbortController.abort()`；已生成的内容保留，未生成任何内容时移除空气泡 |
+| 停止后重新生成 | 停止/出错后依然可以「重新生成」，不会因为状态不是 idle 而卡住 |
+| 空闲超时 | 60 秒没有任何增量则自动中断并提示，避免流挂死后一直显示「正在思考」 |
+| 出错但有部分内容 | 正文与红色错误提示同时显示，不会丢掉已经生成的部分 |
+| 上下文控制 | 只携带最近 `MAX_CONTEXT_MESSAGES`（默认 20）条；当前用户消息不重复添加 |
 
 ---
 
@@ -580,7 +597,16 @@ Worker 出于 SSRF 防护只允许白名单内的 API 地址。默认只允许 `
 按第 6 章跑本地开发（会自动读取 `.env.development`），或按第 11 章部署 Worker 并修改
 `.env.production` 后重新构建。
 
-### 12.14 测试连接成功，但聊天区还是模拟回答
+### 12.14 测试连接成功，但聊天回答不出现或不是流式
 
-阶段 5 只打通了「测试连接（非流式）」。聊天回答的真实流式输出在阶段 7 接入，
-在那之前聊天区显示的仍是阶段 2 的模拟回答（顶部带标注）。
+- 先确认 `.env.production` / `.env.development` 里的端点不是占位符（见 12.13）。
+- 若回答一次性整段出现、没有逐字输出：说明中间有层做了缓冲。本项目 Worker 直接透传
+  `ReadableStream`，可用 `npm run check:stream` 测量首字节与分块到达时间来定位。
+- 若一直显示「AI 正在思考」不结束：可能是网络中断或上游挂死，
+  前端会在 60 秒无增量后自动中断并提示；也可手动点「停止生成」。
+
+### 12.15 开发时页面莫名整页刷新
+
+`worker/` 是独立子项目，若不排除会被 Vite 的文件监听捕获，导致改 Worker 时前端清缓存重载。
+本项目已在 `vite.config.ts` 的 `server.watch.ignored` 中排除 `worker/`、`screenshots/`、
+`project_memory/`。若你新增了其他子目录（例如将来的 `functions/`），记得一并排除。

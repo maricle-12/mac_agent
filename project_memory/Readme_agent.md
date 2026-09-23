@@ -47,9 +47,9 @@ demo/
 │  ├─ utils/                 # ✅ cn / id / clipboard / time / title / markdown
 │  ├─ prompts/               # ⏳ 阶段 8：教师 / 学生 System Prompt 与 getSystemPrompt()
 │  ├─ db/                    # ⏳ 阶段 9：IndexedDB 封装（idb）
-│  ├─ services/              # ✅ storage（Key 与偏好）、chatApi（Worker 调用与错误映射）
-│  ├─ hooks/                 # ✅ useConversations / useChat / useApiSettings
-│  ├─ mocks/                 # ✅ 阶段 2 临时模拟数据（阶段 7 / 9 后删除）
+│  ├─ services/              # ✅ storage、chatApi（Worker 调用与错误映射）、sseStream（SSE 解析）
+│  ├─ hooks/                 # ✅ useConversations / useChat（真实流式）/ useApiSettings
+│  ├─ mocks/                 # ✅ 仅剩示例会话（阶段 9 接入 IndexedDB 后移除）
 │  ├─ components/            # ✅ layout / chat / settings / history / common
 │  └─ App.tsx                # ✅ 组装层，只做状态编排与弹窗调度
 ├─ worker/                   # ✅ 阶段 4：Cloudflare Worker
@@ -87,9 +87,10 @@ demo/
 ## 验证手段
 
 - `npm run build`：`tsc -b` + `vite build`，必须零类型错误。
-- `npm run check:ui`（19 项）：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
-  存储行为、测试连接错误路径（真实打到 DeepSeek）、三档桌面分辨率布局、移动端抽屉，
-  并汇总 console 错误 / 未捕获异常 / 预期外的网络错误。
+- `npm run check:ui`（20 项）：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
+  存储行为、流式渲染（桩 SSE：增量增长 / 停止中断 / 重新生成不重复）、测试连接错误路径
+  （真实打到 DeepSeek）、三档桌面分辨率布局、移动端抽屉，
+  并汇总 console 错误 / 未捕获异常 / 预期外的网络错误。端点未配置时相关用例显式 SKIP。
 - `npm run check:sse`（30 项）：SSE 解析器单元验证，无需网络与 Key。
 - `npm run check:stream`：真实流式链路验证（需 `DEEPSEEK_API_KEY`）。
 - `cd worker && npm run check`（38 项）：Worker 路由、CORS、请求校验、14 例 SSRF 防护、
@@ -100,8 +101,9 @@ demo/
 ## 联调状态
 
 - 已用真实网络验证：**假 Key 端到端**（浏览器 → Worker → api.deepseek.com → 401 → 中文友好提示）。
-- 已由用户验证：**真实 Key 的成功路径**（浏览器「测试连接」显示「连接成功」）。
-- 尚未由代理亲自跑通：**真实流式输出**（无 Key）；用户可执行 `npm run check:stream` 验证。
+- 已由用户验证：**真实 Key 的非流式成功路径**（「测试连接」显示「连接成功」）。
+- 前端流式渲染已用**桩 SSE 确定性验证**；真实流式链路尚未由代理亲自跑通（无 Key），
+  用户可执行 `npm run check:stream` 或在浏览器聊天验证。
 
 ## 关键约束（不可违反）
 

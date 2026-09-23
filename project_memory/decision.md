@@ -151,3 +151,27 @@ Decision: Worker 在 `request.signal` 触发 `abort` 时调用 `controller.abort
 Reason: 用户点「停止生成」或关闭页面后，若上游请求继续，用户仍会为不再需要的 token 付费 —— 这与「Token 成本由用户承担」的产品原则直接冲突。
 
 Impact: 不要为了「简化」而移除该监听；新增任何上游调用（未来的标题生成、Embedding）同样要传播取消信号。
+
+## 流式增量用 rAF 合并刷新
+
+Decision: `useChat` 把增量累积到闭包变量，用 `requestAnimationFrame` 合并写入 React state，而不是每收到一个 delta 就 setState。
+
+Reason: 每个 delta 都触发一次重渲染意味着一次完整的 Markdown + KaTeX 重解析；长回答时明显卡顿。rAF 合并把刷新率限制在每帧一次。
+
+Impact: 不要在 SSE 回调里直接 setState；结束时必须先取消待执行的帧再写入最终内容，避免最后一帧覆盖最终值。
+
+## Vite 监听必须排除子项目目录
+
+Decision: `vite.config.ts` 的 `server.watch.ignored` 排除 `worker/`、`screenshots/`、`project_memory/`。
+
+Reason: `worker/` 是独立子项目（有自己的 tsconfig 与 node_modules）；实测 Vite 会因它的 tsconfig 变化清缓存并强制整页刷新，曾导致一次自动化检查整体误报「#root 未渲染」，排查成本很高。
+
+Impact: 新增任何子项目目录都要同步加入该列表；否则会出现「改 A 目录导致 B 页面刷新」的诡异现象。
+
+## 依赖真实端点的自动化用例必须显式声明并跳过
+
+Decision: `ui-check.mjs` 增加「探测转发端点是否已配置」用例；端点仍是占位符时，依赖真实请求的用例调用 `ctx.skip()` 并打印原因。
+
+Reason: 生产构建在阶段 14 之前不可能有可用的 Worker 地址，把这些用例报成 FAIL 会掩盖真实问题，也让「全绿」失去意义。
+
+Impact: 新增依赖外部服务的用例时，必须同时给出可判定的跳过条件与清晰的跳过原因。
