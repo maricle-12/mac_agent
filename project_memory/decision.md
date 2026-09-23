@@ -168,6 +168,22 @@ Reason: `worker/` 是独立子项目（有自己的 tsconfig 与 node_modules）
 
 Impact: 新增任何子项目目录都要同步加入该列表；否则会出现「改 A 目录导致 B 页面刷新」的诡异现象。
 
+## Prompt 只能通过 getSystemPrompt(mode) 获取
+
+Decision: 所有 Prompt 集中在 `src/prompts/`，对外只有 `index.ts` 的 `getSystemPrompt(mode)` 一个出口；组件与 Hook 不得直接 import `teacher.ts` / `student.ts` 的常量。
+
+Reason: 用户明确要求「前端不要直接知道完整 Prompt 内容」；单一出口让调整 Prompt 不需要改任何 UI 代码，也便于未来扩展成多 Agent。
+
+Impact: 新增 Agent 时在 `basePrompts` 补一项并放宽 `AgentMode` 联合类型，不要另开取用路径。Prompt 内容属于核心资产，改动应视为产品改动（需要重新验证两种模式的注入断言）。
+
+## System Prompt 动态插入，不写入本地历史
+
+Decision: System Prompt 在每次请求时由 `buildRequestMessages` 拼接到 messages 最前，绝不写入 IndexedDB / 本地历史。
+
+Reason: 用户明确要求「System Prompt 不需要写入 IndexedDB 每条消息，调用 API 时动态插入当前模式对应 System Prompt，这样修改 Prompt 后新请求可以自动使用新版 Prompt」。
+
+Impact: 不要为了「省一次拼接」而把 system 消息持久化；ui-check 中有「连续两条消息后 system 仍只有一条」的回归断言，必须保持通过。
+
 ## 依赖真实端点的自动化用例必须显式声明并跳过
 
 Decision: `ui-check.mjs` 增加「探测转发端点是否已配置」用例；端点仍是占位符时，依赖真实请求的用例调用 `ctx.skip()` 并打印原因。

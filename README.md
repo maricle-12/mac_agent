@@ -209,8 +209,12 @@ set DEEPSEEK_API_KEY=sk-xxxx && npm run check:stream      # CMD
 node scripts/screenshot.mjs http://localhost:5173/
 ```
 
-`ui-check.mjs` 会检查 20 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
+`ui-check.mjs` 会检查 21 项内容并在最后汇总 `console.error`、未捕获异常与浏览器日志错误。
 修改 UI 后建议先跑一遍，能第一时间发现渲染或交互回归。
+
+其中包含**System Prompt 验证**（拦截请求体断言）：教师/学生模式下 system 消息内容分别正确、
+system 消息位于最前且**有且仅有一条**、连续请求后不会在历史中累积、
+当前用户消息不会重复出现。
 
 其中包含**流式输出验证**（用桩 SSE 确定性复现）：断言「AI 正在思考」状态、用户气泡、
 **回答内容随时间增长**（证明是流式而不是一次性渲染）、停止生成后内容保留且请求真被中断
@@ -329,7 +333,6 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 ---
 
 ## 9. 模型设置项
-
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
 | API Provider | DeepSeek | 第一版仅 DeepSeek |
@@ -352,6 +355,38 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 
 ---
 
+## 10. System Prompt 架构
+
+Prompt 是产品的核心资产，全部集中在 `src/prompts/`，组件层不感知内容：
+
+```
+src/prompts/
+├─ teacher.ts   # 教师模式角色设定（对应需求文档第十五节）
+├─ student.ts   # 学生模式角色设定（对应需求文档第十六节）
+├─ shared.ts    # 所有模式共用的输出格式规则（Markdown / LaTeX 公式约定）
+└─ index.ts     # getSystemPrompt(mode) —— 唯一出口
+```
+
+规则：
+
+| 规则 | 说明 |
+| --- | --- |
+| 唯一出口 | 只有 `getSystemPrompt(mode)` 能取到 Prompt，组件不得直接 import 具体 Prompt 常量 |
+| 动态插入 | System Prompt 在每次请求时拼接，**不写入本地聊天历史** —— 修改 Prompt 后新请求立即生效 |
+| 不累积 | 历史里只有 user / assistant；重复请求不会导致 system 消息越来越多 |
+| 可扩展 | 未来新增 `lessonPlan` / `examGenerator` / `errorAnalysis` / `research` 时，在 `basePrompts` 里补一项、放宽 `AgentMode` 联合类型即可 |
+
+`shared.ts` 里的输出格式规则是本项目**额外补充**的（需求文档未显式要求），原因是网页端用
+Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善排版：
+
+- 行内公式写 `$x^2$`；
+- **块级公式必须让 `$$` 独占一行** —— 这与 `remark-math` 的解析规则一致
+  （同行 `$$...$$` 会被当成行内公式，见 `src/utils/markdown.ts`）。
+
+如果你不想要这部分，删除 `src/prompts/shared.ts` 并去掉 `index.ts` 中的拼接即可。
+
+---
+
 ## 10. 开发路线图（14 个阶段）
 
 | 阶段 | 内容 | 状态 |
@@ -363,7 +398,8 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 | 5 | 打通 DeepSeek 非流式请求 | ✅ 已完成 |
 | 6 | 改为 Streaming（SSE 透传） | ✅ 已完成 |
 | 7 | 网页接入 Streaming + 停止生成 | ✅ 已完成 |
-| 8 | 教师 / 学生 System Prompt | ⬜ |
+| 8 | 教师 / 学生 System Prompt | ✅ 已完成 |
+| 9 | IndexedDB 历史记录 | ⬜ |
 | 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 7 | 网页接入 Streaming + 停止生成 | ⬜ |
 | 8 | 教师 / 学生 System Prompt | ⬜ |

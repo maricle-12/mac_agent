@@ -45,7 +45,7 @@ demo/
 │  ├─ config/                # ✅ 品牌与 API 配置、快捷卡片文案
 │  ├─ types/                 # ✅ 公共类型（chat / conversation / settings）
 │  ├─ utils/                 # ✅ cn / id / clipboard / time / title / markdown
-│  ├─ prompts/               # ⏳ 阶段 8：教师 / 学生 System Prompt 与 getSystemPrompt()
+│  ├─ prompts/               # ✅ teacher.ts / student.ts / shared.ts / index.ts（getSystemPrompt）
 │  ├─ db/                    # ⏳ 阶段 9：IndexedDB 封装（idb）
 │  ├─ services/              # ✅ storage、chatApi（Worker 调用与错误映射）、sseStream（SSE 解析）
 │  ├─ hooks/                 # ✅ useConversations / useChat（真实流式）/ useApiSettings

@@ -178,9 +178,15 @@ async function installStreamStub(ctx, parts, delayMs, firstDelayMs = 350) {
     window.__origFetch = window.__origFetch || window.fetch;
     window.__streamAborted = false;
     window.__streamChunks = 0;
+    window.__lastChatRequest = null;
     window.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input.url;
       if (!url.includes('/api/chat')) return window.__origFetch(input, init);
+      try {
+        window.__lastChatRequest = JSON.parse(init && init.body ? init.body : 'null');
+      } catch {
+        window.__lastChatRequest = null;
+      }
       const encoder = new TextEncoder();
       const parts = ${JSON.stringify(parts)};
       const delay = ${delayMs};
@@ -518,6 +524,148 @@ step('重新生成：不重复添加用户消息', async (ctx) => {
     )
   } finally {
     await ctx.waitFor(`return !byText('停止生成');`, 15000).catch(() => {})
+    await removeStreamStub(ctx)
+  }
+})
+
+step('System Prompt：按模式正确注入且不写入历史', async (ctx) => {
+  if (ctx.endpointConfigured === false) {
+    ctx.skip('端点未配置，跳过 System Prompt 用例')
+  }
+  await ctx.waitFor(`return !byText('停止生成');`, 15000)
+
+  await installStreamStub(ctx, ['好'], 60, 60)
+  try {
+    // ---- 教师模式 ----
+    await ctx.eval(`return setValue('textarea', '教师模式校验');`)
+    await sleep(150)
+    await ctx.eval(`return pressEnter('textarea');`)
+    await ctx.waitFor(`return window.__lastChatRequest !== null;`, 10000)
+    await ctx.waitFor(`return !byText('停止生成');`, 8000)
+
+    const teacher = await ctx.eval(`
+      const body = window.__lastChatRequest || {};
+      const messages = body.messages || [];
+      const systems = messages.filter((m) => m.role === 'system');
+      const last = messages[messages.length - 1] || {};
+      return {
+        systemCount: systems.length,
+        firstIsSystem: messages[0] ? messages[0].role === 'system' : false,
+        content: systems[0] ? systems[0].content : '',
+        lastRole: last.role,
+        lastContent: last.content,
+        stream: body.stream,
+        model: body.model,
+        temperature: body.temperature,
+        currentOccurrences: messages.filter(
+          (m) => m.role === 'user' && m.content === '教师模式校验',
+        ).length,
+        userCount: messages.filter((m) => m.role === 'user').length,
+      };
+    `)
+
+    ctx.assert(teacher.systemCount === 1, `system 消息应有且仅有 1 条，实际 ${teacher.systemCount}`)
+    ctx.assert(teacher.firstIsSystem, 'system 消息应位于最前')
+    ctx.assert(
+      teacher.content.includes('教育教学智能体'),
+      '教师模式 System Prompt 未正确注入（缺少角色描述）',
+    )
+    ctx.assert(
+      teacher.content.includes('教学重点与难点分析') && teacher.content.includes('作业设计'),
+      '教师模式 Prompt 缺少任务清单',
+    )
+    ctx.assert(
+      teacher.content.includes('$$'),
+      'System Prompt 未包含公式格式约定',
+    )
+    ctx.assert(
+      teacher.lastRole === 'user' && teacher.lastContent === '教师模式校验',
+      `最后一条应为本次用户消息，实际 ${teacher.lastRole} / ${teacher.lastContent}`,
+    )
+    ctx.assert(
+      teacher.currentOccurrences === 1,
+      `当前用户消息被重复添加：出现 ${teacher.currentOccurrences} 次`,
+    )
+    ctx.assert(teacher.userCount >= 1, '请求中没有任何用户消息')
+    ctx.assert(teacher.stream === true, '未以流式方式请求')
+    ctx.assert(teacher.model === 'deepseek-chat', `模型参数异常: ${teacher.model}`)
+    ctx.assert(typeof teacher.temperature === 'number', 'temperature 未传递')
+
+    // 再发一条：system 消息不得在历史中累积（历史上只存 user / assistant）
+    await ctx.eval(`return setValue('textarea', '教师模式校验二');`)
+    await sleep(150)
+    await ctx.eval(`return pressEnter('textarea');`)
+    await ctx.waitFor(
+      `return !byText('停止生成') && Boolean(window.__lastChatRequest) && window.__lastChatRequest.messages.some((m) => m.content === '教师模式校验二');`,
+      10000,
+    )
+    const second = await ctx.eval(`
+      const messages = (window.__lastChatRequest || {}).messages || [];
+      return {
+        total: messages.length,
+        systemCount: messages.filter((m) => m.role === 'system').length,
+        systemsAfterFirst: messages.slice(1).filter((m) => m.role === 'system').length,
+      };
+    `)
+    ctx.assert(
+      second.systemCount === 1 && second.systemsAfterFirst === 0,
+      `system 消息在历史中累积了: ${JSON.stringify(second)}`,
+    )
+
+    // ---- 切换到学生模式 ----
+    await ctx.eval(`return clickText('学生模式');`)
+    await sleep(400)
+    await ctx.eval(`
+      const btn = byExact('新建学生模式对话');
+      if (btn) btn.click();
+      return true;
+    `)
+    await sleep(450)
+    ctx.assert(
+      await ctx.eval(`return $('h1')?.textContent === '学生模式';`),
+      '未能切换到学生模式',
+    )
+
+    await ctx.eval(`return setValue('textarea', '学生模式校验');`)
+    await sleep(150)
+    await ctx.eval(`return pressEnter('textarea');`)
+    await ctx.waitFor(`return !byText('停止生成') && window.__lastChatRequest !== null;`, 10000)
+
+    const student = await ctx.eval(`
+      const body = window.__lastChatRequest || {};
+      const messages = body.messages || [];
+      const systems = messages.filter((m) => m.role === 'system');
+      return {
+        systemCount: systems.length,
+        content: systems[0] ? systems[0].content : '',
+        lastContent: messages.length ? messages[messages.length - 1].content : '',
+        currentOccurrences: messages.filter(
+          (m) => m.role === 'user' && m.content === '学生模式校验',
+        ).length,
+        userCount: messages.filter((m) => m.role === 'user').length,
+      };
+    `)
+
+    ctx.assert(student.systemCount === 1, `学生模式 system 消息数量异常: ${student.systemCount}`)
+    ctx.assert(
+      student.content.includes('学习辅导智能体'),
+      '学生模式 System Prompt 未正确注入（缺少角色描述）',
+    )
+    ctx.assert(
+      student.content.includes('不是机械地给学生答案') &&
+        student.content.includes('优先解释「为什么」') &&
+        student.content.includes('避免使用羞辱性、否定性语言'),
+      '学生模式 Prompt 缺少关键要求',
+    )
+    ctx.assert(
+      !student.content.includes('教育教学智能体'),
+      '学生模式不应携带教师模式的 Prompt',
+    )
+    ctx.assert(
+      student.lastContent === '学生模式校验' && student.currentOccurrences === 1,
+      `学生模式请求的最后一条消息或用户消息次数不正确（${student.lastContent} / ${student.currentOccurrences} 次）`,
+    )
+  } finally {
     await removeStreamStub(ctx)
   }
 })

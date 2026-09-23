@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { apiConfig } from '@/config/api'
 import type { ConversationStore } from '@/hooks/useConversations'
+import { getSystemPrompt } from '@/prompts'
 import { buildRequestMessages, isAbortError, requestChatCompletion } from '@/services/chatApi'
 import { consumeSseStream } from '@/services/sseStream'
 import type { ApiMessage, ChatMessage, ChatStatus } from '@/types/chat'
@@ -206,10 +207,12 @@ export function useChat({ store, mode, apiKey, settings }: UseChatOptions): UseC
 
       setInput('')
 
-      // 当前用户消息已在 history 中，这里不要重复添加
+      // 当前用户消息已在 history 中，这里不要重复添加；
+      // System Prompt 按当前模式动态插入，不写入本地历史（改 Prompt 后新请求立即生效）
       await runGeneration(
         conversationId,
         buildRequestMessages([...history, userMessage], {
+          systemPrompt: getSystemPrompt(mode),
           maxContextMessages: apiConfig.maxContextMessages,
         }),
       )
@@ -243,9 +246,12 @@ export function useChat({ store, mode, apiKey, settings }: UseChatOptions): UseC
 
     await runGeneration(
       conversation.id,
-      buildRequestMessages(kept, { maxContextMessages: apiConfig.maxContextMessages }),
+      buildRequestMessages(kept, {
+        systemPrompt: getSystemPrompt(mode),
+        maxContextMessages: apiConfig.maxContextMessages,
+      }),
     )
-  }, [runGeneration, store])
+  }, [mode, runGeneration, store])
 
   return useMemo(
     () => ({ input, setInput, status, isGenerating, send, stop, regenerate }),
