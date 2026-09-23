@@ -252,11 +252,59 @@ async function removeStreamStub(ctx) {
   `)
 }
 
+/**
+ * 安装一个「流到一半断开」的替身：先发几个增量，再让流报错。
+ * 用于验证断连时能否保留已生成内容并给出友好提示。
+ */
+async function installBrokenStreamStub(ctx, parts, delayMs) {
+  await ctx.eval(`
+    window.__origFetch = window.__origFetch || window.fetch;
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (!url.includes('/api/chat')) return window.__origFetch(input, init);
+      const encoder = new TextEncoder();
+      const parts = ${JSON.stringify(parts)};
+      const stream = new ReadableStream({
+        async start(controller) {
+          for (const part of parts) {
+            const payload = JSON.stringify({ choices: [{ delta: { content: part } }] });
+            controller.enqueue(encoder.encode('data: ' + payload + '\\n\\n'));
+            await new Promise((resolve) => setTimeout(resolve, ${delayMs}));
+          }
+          // 模拟网络中断：没有 [DONE]，直接让流报错
+          controller.error(new TypeError('network error'));
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    };
+    return true;
+  `)
+}
+
 /** 读取当前最后一条 AI 回答的纯文本 */
 const LAST_ANSWER_EXPR = `
   const bodies = $$('.md-body');
   return bodies.length ? bodies[bodies.length - 1].innerText : '';
 `
+
+/**
+ * 确保已配置 API Key。
+ * 由于前面的用例会「清除 API 配置」，后续需要发请求的用例必须先补回来，
+ * 否则 useChat 会在本地直接短路、根本不会发起 fetch。
+ */
+async function ensureApiKey(ctx) {
+  if (!(await ctx.eval(`return document.body.innerText.includes('未配置');`))) return
+
+  await ctx.eval(`return clickText('设置');`)
+  await sleep(300)
+  await ctx.eval(`return setValue('#api-key', 'sk-error-case-key');`)
+  await sleep(150)
+  await ctx.eval(`return clickText('保存');`)
+  await sleep(400)
+}
 
 /**
  * 统计可见的会话行数量。
@@ -1438,6 +1486,87 @@ step('删除当前会话 → 自动选中相邻会话', async (ctx) => {
   `)
   ctx.assert(after.count === countBefore - 1, `删除后数量不正确: ${countBefore} → ${after.count}`)
   ctx.assert(after.hasActive, '删除当前会话后没有自动选中相邻会话（被丢进了空状态）')
+})
+
+step('流式中途断开 → 保留已生成内容 + 友好提示 + 页面不崩', async (ctx) => {
+  if (ctx.endpointConfigured === false) {
+    ctx.skip('端点未配置，跳过流式中断用例')
+  }
+  await ctx.waitFor(`return !byText('停止生成');`, 15000)
+  await ensureApiKey(ctx)
+
+  await installBrokenStreamStub(ctx, ['已生成的前半段内容', '，仍然是可见的'], 200)
+  try {
+    await ctx.eval(`return setValue('textarea', '断开测试');`)
+    await sleep(150)
+    await ctx.eval(`return pressEnter('textarea');`)
+
+    // 等错误提示出现
+    await ctx.waitFor(`return document.body.innerText.includes('连接中断');`, 12000)
+
+    const info = await ctx.eval(`
+      const bodies = $$('.md-body');
+      return {
+        partialKept: bodies.length ? bodies[bodies.length - 1].innerText.includes('已生成的前半段内容') : false,
+        friendly: document.body.innerText.includes('连接中断'),
+        keepsPartialHint: document.body.innerText.includes('已保留已生成的内容'),
+        stopped: !byText('停止生成'),
+        canRegenerate: Boolean(byText('重新生成')),
+        errorStyled: $$('.border-danger\\\\/25').length > 0,
+      };
+    `)
+    ctx.assert(info.partialKept, '中断后已生成的内容没有保留')
+    ctx.assert(info.friendly, '中断后没有显示「连接中断」提示')
+    ctx.assert(info.keepsPartialHint, '中断提示没有说明已保留内容')
+    ctx.assert(info.stopped, '中断后仍显示「停止生成」')
+    ctx.assert(info.canRegenerate, '中断后应仍可「重新生成」')
+    ctx.assert(info.errorStyled, '错误样式未生效')
+
+    // 页面必须仍然可用：还能新建对话
+    await ctx.eval(`return clickText('新建对话');`)
+    await sleep(400)
+    ctx.assert(
+      await ctx.eval(`return document.body.innerText.includes('今天想准备什么课程？');`),
+      '流式中断后页面无法继续使用（空状态未渲染）',
+    )
+  } finally {
+    await removeStreamStub(ctx)
+  }
+})
+
+step('异常内容（非法公式 / 未闭合代码块）不会让页面崩溃', async (ctx) => {
+  if (ctx.endpointConfigured === false) {
+    ctx.skip('端点未配置，跳过异常内容用例')
+  }
+  await ctx.waitFor(`return !byText('停止生成');`, 15000)
+  await ensureApiKey(ctx)
+
+  await installStreamStub(
+    ctx,
+    ['非法公式：', '$$\\frac{}{$$', '\n\n未闭合代码块：\n\n', '```js\nconst a = 1\n'],
+    120,
+    120,
+  )
+  try {
+    await ctx.eval(`return setValue('textarea', '异常内容测试');`)
+    await sleep(150)
+    await ctx.eval(`return pressEnter('textarea');`)
+    await ctx.waitFor(`return !byText('停止生成') && document.body.innerText.includes('未闭合代码块');`, 12000)
+
+    const info = await ctx.eval(`
+      return {
+        stillRendered: document.body.innerText.includes('非法公式'),
+        sidebarAlive: Boolean($('[data-testid="sidebar-desktop"]')),
+        composerAlive: Boolean($('textarea')),
+        noCrashScreen: !document.body.innerText.includes('页面出现了意外错误'),
+      };
+    `)
+    ctx.assert(info.stillRendered, '异常内容没有渲染出来')
+    ctx.assert(info.sidebarAlive && info.composerAlive, '页面结构异常')
+    ctx.assert(info.noCrashScreen, '异常内容触发了整页兜底（不应发生）')
+  } finally {
+    await removeStreamStub(ctx)
+  }
 })
 
 step('清除本地聊天记录（隐私功能）', async (ctx) => {

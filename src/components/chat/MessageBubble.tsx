@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { CheckIcon, CopyIcon, RefreshIcon } from '@/components/common/icons'
+import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer'
 import { cn } from '@/utils/cn'
 import { copyText } from '@/utils/clipboard'
@@ -59,7 +60,10 @@ export function MessageBubble({
       <div className="min-w-0 flex-1">
         {message.content ? (
           <div className={cn(streaming && 'md-streaming')}>
-            <MarkdownRenderer content={message.content} />
+            {/* 单条消息渲染失败不应影响整个会话 */}
+            <ErrorBoundary inline>
+              <MarkdownRenderer content={message.content} />
+            </ErrorBoundary>
           </div>
         ) : null}
 

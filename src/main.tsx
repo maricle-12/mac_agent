@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import App from '@/App'
+import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
 
@@ -13,6 +14,9 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    {/* 兜底：任何渲染异常都不应该让用户看到整页白屏 */}
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )

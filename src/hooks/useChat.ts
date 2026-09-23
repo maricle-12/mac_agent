@@ -3,7 +3,12 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { apiConfig } from '@/config/api'
 import type { ConversationStore } from '@/hooks/useConversations'
 import { getSystemPrompt } from '@/prompts'
-import { buildRequestMessages, isAbortError, requestChatCompletion } from '@/services/chatApi'
+import {
+  ApiRequestError,
+  buildRequestMessages,
+  isAbortError,
+  requestChatCompletion,
+} from '@/services/chatApi'
 import { consumeSseStream } from '@/services/sseStream'
 import type { ApiMessage, ChatMessage, ChatStatus } from '@/types/chat'
 import type { AgentMode } from '@/types/conversation'
@@ -168,7 +173,13 @@ export function useChat({ store, mode, apiKey, settings }: UseChatOptions): UseC
           return
         }
 
-        const message = error instanceof Error ? error.message : '生成失败，请稍后重试。'
+        const message =
+          error instanceof ApiRequestError
+            ? error.message
+            : full.length > 0
+              ? '生成过程中连接中断，已保留已生成的内容。可点击「重新生成」重试。'
+              : '网络连接中断，请检查网络后重试。'
+
         updateMessage(conversationId, assistantId, {
           content: full,
           error: message,
