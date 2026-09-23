@@ -37,7 +37,9 @@ demo/
 ├─ .env.production           # 生产端点（部署 Worker 后填写）
 ├─ public/_redirects         # Cloudflare Pages SPA 回退，避免刷新 404
 ├─ scripts/
-│  ├─ ui-check.mjs           # ✅ 无依赖 UI 自动化检查（CDP，12 项断言 + 控制台错误）
+│  ├─ ui-check.mjs           # ✅ 无依赖 UI 自动化检查（CDP，19 项断言 + 控制台错误）
+│  ├─ sse-parse-check.mjs    # ✅ SSE 解析器单元验证（30 项，含逐字节与随机切分）
+│  ├─ stream-check.mjs       # ✅ 真实流式链路验证（需 DEEPSEEK_API_KEY，测首字节与分块时间）
 │  └─ screenshot.mjs         # ✅ 无依赖页面截图工具（输出到 screenshots/，已 gitignore）
 ├─ src/
 │  ├─ config/                # ✅ 品牌与 API 配置、快捷卡片文案
@@ -88,6 +90,8 @@ demo/
 - `npm run check:ui`（19 项）：无头 Chrome/Edge + CDP，检查渲染、Markdown/公式、交互、弹窗、
   存储行为、测试连接错误路径（真实打到 DeepSeek）、三档桌面分辨率布局、移动端抽屉，
   并汇总 console 错误 / 未捕获异常 / 预期外的网络错误。
+- `npm run check:sse`（30 项）：SSE 解析器单元验证，无需网络与 Key。
+- `npm run check:stream`：真实流式链路验证（需 `DEEPSEEK_API_KEY`）。
 - `cd worker && npm run check`（38 项）：Worker 路由、CORS、请求校验、14 例 SSRF 防护、
   真实上游转发与错误映射、密钥不泄露。
 - `node scripts/screenshot.mjs`：生成桌面 / 空状态 / 设置弹窗 / 移动端截图。
@@ -96,7 +100,8 @@ demo/
 ## 联调状态
 
 - 已用真实网络验证：**假 Key 端到端**（浏览器 → Worker → api.deepseek.com → 401 → 中文友好提示）。
-- 未验证：**真实 Key 的成功路径**（环境无可用 Key）。需要用户在浏览器里自测或提供 Key。
+- 已由用户验证：**真实 Key 的成功路径**（浏览器「测试连接」显示「连接成功」）。
+- 尚未由代理亲自跑通：**真实流式输出**（无 Key）；用户可执行 `npm run check:stream` 验证。
 
 ## 关键约束（不可违反）
 

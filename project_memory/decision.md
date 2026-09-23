@@ -135,3 +135,19 @@ Decision: `ui-check.mjs` 中会故意产生 4xx 的用例必须调用 `ctx.toler
 Reason: 若直接忽略所有 `network:` 日志，会漏掉真正的基础设施故障；若不做容忍，则每次正常跑错误分支都会污染结果。同理，生产构建在阶段 14 前端点仍是占位符，把这种情况报成 FAIL 会掩盖真实问题。
 
 Impact: 新增涉及失败分支或外部依赖的用例时，必须显式声明容忍或跳过，不允许放宽容忍范围。
+
+## SSE 必须用行缓冲 + 流式解码器解析
+
+Decision: 前端解析 SSE 只能使用 `src/services/sseStream.ts` 的 `createSseParser`；内部用「残余字符串 + 新 chunk」按 `\n` 切行，并用 `new TextDecoder('utf-8')` + `decode(chunk, { stream: true })` 解码。
+
+Reason: 网络 chunk 与 SSE 事件边界无关，一个 JSON 会被切开；一个中文字符（3 字节 UTF-8）也会被切开，逐块独立解码会产出 U+FFFD 替换字符。用户明确要求「不能简单 `chunk.split('\n')` 然后假设每个 chunk 都是完整 JSON」。
+
+Impact: 禁止在别处重新实现 SSE 解析；`npm run check:sse` 必须保持全绿（含逐字节与随机切分用例）。后续新增解析特性（例如新的 delta 字段）先补用例再改实现。
+
+## 客户端断开必须传导到上游
+
+Decision: Worker 在 `request.signal` 触发 `abort` 时调用 `controller.abort()`，中断上游 fetch。
+
+Reason: 用户点「停止生成」或关闭页面后，若上游请求继续，用户仍会为不再需要的 token 付费 —— 这与「Token 成本由用户承担」的产品原则直接冲突。
+
+Impact: 不要为了「简化」而移除该监听；新增任何上游调用（未来的标题生成、Embedding）同样要传播取消信号。

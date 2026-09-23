@@ -370,6 +370,11 @@ async function handleChat(request: Request, origin: string): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
 
+  // 客户端断开（关闭页面、点击「停止生成」）时同步中断上游请求，
+  // 避免为已经不需要的回答继续消耗用户的 token。
+  const abortOnClientDisconnect = () => controller.abort()
+  request.signal.addEventListener('abort', abortOnClientDisconnect, { once: true })
+
   let upstream: Response
   try {
     upstream = await fetch(upstreamUrl, {
@@ -395,6 +400,7 @@ async function handleChat(request: Request, origin: string): Promise<Response> {
   // 5) 上游返回错误：统一转成友好错误结构（detail 已脱敏）
   if (!upstream.ok) {
     clearTimeout(timer)
+    request.signal.removeEventListener('abort', abortOnClientDisconnect)
     const errorText = await upstream.text().catch(() => '')
     const code = statusToCode(upstream.status)
     return errorFor(upstream.status, code, origin, scrub(extractUpstreamMessage(errorText), payload.apiKey))
@@ -405,6 +411,7 @@ async function handleChat(request: Request, origin: string): Promise<Response> {
     try {
       const text = await upstream.text()
       clearTimeout(timer)
+      request.signal.removeEventListener('abort', abortOnClientDisconnect)
       return new Response(text, {
         status: 200,
         headers: {
@@ -415,13 +422,14 @@ async function handleChat(request: Request, origin: string): Promise<Response> {
       })
     } catch {
       clearTimeout(timer)
+      request.signal.removeEventListener('abort', abortOnClientDisconnect)
       return errorFor(502, 'upstream_unreachable', origin)
     }
   }
 
-  // 7) 流式：直接把上游 body 交给浏览器。
-  //    连接已建立，超时定时器在此清理；用户点击「停止生成」时前端会中断请求，
-  //    该中断会传导到上游 fetch，无需额外处理。
+  // 7) 流式：直接把上游 body 交给浏览器，边生成边下发，不做整体缓冲。
+  //    连接已建立，超时定时器在此清理；客户端断开由 request.signal → controller.abort()
+  //    传导到上游 fetch，运行时也会取消上游 body 的读取。
   //    注意：只透传 Content-Type，不能透传 Content-Encoding（body 已被 fetch 解压）。
   clearTimeout(timer)
   return new Response(upstream.body, {

@@ -185,6 +185,8 @@ npm run dev
 | `npm run preview` | 本地预览 `dist/` 构建产物（http://localhost:4173） |
 | `npm run typecheck` | 只做类型检查 |
 | `npm run check:ui` | 无头浏览器 UI 自动化检查（需先启动 `npm run dev` 或 `npm run preview`） |
+| `npm run check:sse` | SSE 解析器单元验证（含逐字节切分等极端情况，无需网络） |
+| `npm run check:stream` | **真实流式链路验证**（需 `DEEPSEEK_API_KEY`，测量首字节与分块到达时间） |
 
 ### 自动化验证
 
@@ -195,6 +197,13 @@ npm run dev
 npm run check:ui                      # 默认检查 http://localhost:5173/
 
 node scripts/ui-check.mjs http://localhost:4173/   # 也可以检查生产预览
+
+# SSE 解析器单元验证（不需要网络、不需要 Key）
+npm run check:sse
+
+# 真实流式链路验证（需要你自己的 Key，脚本不保存也不打印 Key）
+$env:DEEPSEEK_API_KEY="sk-xxxx"; npm run check:stream    # PowerShell
+set DEEPSEEK_API_KEY=sk-xxxx && npm run check:stream      # CMD
 
 # 截图（输出到 screenshots/，该目录不提交 Git）
 node scripts/screenshot.mjs http://localhost:5173/
@@ -347,8 +356,9 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 | 2 | 完整静态 UI（模拟消息） | ✅ 已完成 |
 | 3 | API 设置（Key 输入 / 保存 / 测试连接） | ✅ 已完成 |
 | 4 | 建立 Cloudflare Worker | ✅ 已完成 |
-| 5 | 打通 DeepSeek 非流式请求 | ✅ 已完成（真实成功路径需真实 Key 才能验证） |
-| 6 | 改为 Streaming（SSE 透传） | ⬜ |
+| 5 | 打通 DeepSeek 非流式请求 | ✅ 已完成 |
+| 6 | 改为 Streaming（SSE 透传） | ✅ 已完成 |
+| 7 | 网页接入 Streaming + 停止生成 | ⬜ |
 | 6 | 改为 Streaming（SSE 透传） | ⬜ |
 | 7 | 网页接入 Streaming + 停止生成 | ⬜ |
 | 8 | 教师 / 学生 System Prompt | ⬜ |
@@ -436,6 +446,24 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 
 > **为什么来源被拒时仍然回显 CORS 头？** 这样前端能读到「来源未授权，请检查 ALLOWED_ORIGINS」
 > 这条可操作的提示，而不是一个无法定位的 CORS 报错。该响应只包含错误说明，不含任何数据。
+
+### 流式（SSE）实现要点
+
+这是本项目最容易出错的地方，实现时严格遵守了以下几点：
+
+1. **Worker 不做整体缓冲**：直接把上游 `ReadableStream` 交给 `Response`，边生成边下发。
+2. **只透传 `Content-Type`**：`Content-Encoding` 不能透传 —— Workers 的 `fetch` 已自动解压
+   body，再透传会让浏览器二次解压导致乱码。
+3. **客户端断开即中断上游**：`request.signal` 触发时 `controller.abort()`，
+   用户点「停止生成」或关闭页面后不再继续消耗 token。
+4. **前端按行缓冲解析**：绝不使用 `chunk.split('\n')` 后假设每块都是完整 JSON。
+   `src/services/sseStream.ts` 用「残余字符串 + 新 chunk」的方式按行切分，
+   并用 `TextDecoder({ stream: true })` 处理跨 chunk 的多字节中文字符。
+5. **遵循 SSE 规范**：同一事件内多行 `data:` 用换行拼接，空行才派发一次；
+   忽略 `:` 注释（心跳）；收到 `data: [DONE]` 立即结束并忽略其后内容。
+
+`npm run check:sse` 会逐字节切分真实格式的 SSE 文本（JSON 与中文都被切开），
+并随机切分 200 次，验证解析结果始终正确。
 
 ---
 
