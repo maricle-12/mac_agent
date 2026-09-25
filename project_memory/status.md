@@ -170,21 +170,50 @@ git push  →  macos-latest runner：checkout → setup-node 22 → npm ci(根 +
 失败路径（假 Key → 401 → 中文提示 → 不泄露 Key）、流式渲染（桩 SSE）、
 整条转发链路与落库均已验证。
 
+## 产品形态：本地免安装应用（**不再需要 Cloudflare**）
+
+Decision（2026-09 确认）: 本项目的交付形态确定为**本地免安装桌面应用**：
+Windows 解压后双击 `启动智能体.exe`，macOS 打开 dmg 拖进「应用程序」后点击启动；
+前后端都跑在用户自己的电脑上（本地服务只监听 `127.0.0.1`）。
+**不需要 Cloudflare、不需要服务器、不需要域名、不需要任何云端账号。**
+
+由此产生的文档与配置调整：
+
+| 项 | 处理 |
+| --- | --- |
+| README 开头与「整体架构」 | 改写为「本地服务 + 浏览器界面」，不再以「一个公网链接」作为产品定位 |
+| README 第 14 章（Cloudflare 从零部署教程，283 行） | 移到 `docs/legacy-cloudflare-deployment.md`，标注为**可选的历史方案**；README 原位只留一个简短小节 |
+| README 第 15 章验收清单 | 修正 6 条与本地版不符的条目（公网链接 / IndexedDB / 云端数据库 / Key 持有方）；云端条目标为「可选」 |
+| README 第 16 章排查 | 顶部加说明：16.9～16.13、16.18～16.19 属于云端可选方案专用 |
+| README 第 7 章环境变量 | 明确本地版用 `.env.portable`（同源 `/api/chat`），`.env.production` 仅用于可选云端部署 |
+| `.env.production` | 清掉已部署的 Worker 地址，改为空值 + 说明（仓库已公开，且该地址已不再使用） |
+| 个人邮箱 | 从 README 与 `status.md` 中清除（仓库已公开） |
+
+> `worker/` 目录**必须保留**：它不是「只有 Cloudflare 才需要的东西」，
+> 本地服务用的就是同一份 `worker/src/index.ts`（构建时由 esbuild 打包进可执行文件），
+> 校验 / CORS / SSRF 白名单 / 流式透传逻辑全在里面。删掉它本地版会直接失效。
+
 ## 总体进度
 
-**14 / 14 阶段完成，并且已在真实 Cloudflare 账号上完成部署与公网验证。**
+**14 / 14 阶段完成**；早期已完成过公网部署与验证（见下面的历史记录），
+当前交付路径已改为本地免安装应用（Windows + macOS）。
 
-## 线上地址（可直接打开）
+## 历史记录（可选方案）：公网部署与验证
+
+> 以下内容记录的是项目早期「纯静态前端 + 无状态转发 Worker」的公网部署过程与验证结果。
+> **它不再是本项目的交付路径**，仅作为可选方案的历史记录保留；具体教程见
+> [`docs/legacy-cloudflare-deployment.md`](../docs/legacy-cloudflare-deployment.md)。
+
+### 当时的线上地址
 
 | 项 | 地址 |
 | --- | --- |
 | 前端（公网入口） | **https://ai-edu-agent.pages.dev** |
 | Worker | https://ai-edu-agent-api.edu-demo-2026.workers.dev |
-| Cloudflare 账号 | `2750366148@qq.com` 的账号 |
 | workers.dev 子域名 | `edu-demo-2026`（首选 `edu-demo` 已被占用） |
 | Pages 项目 | `ai-edu-agent`（Production 分支 `main`） |
 
-## 公网验证结果（实际打线上服务，非本地模拟）
+### 公网验证结果（当时实际打线上服务，非本地模拟）
 
 | 验证 | 结果 |
 | --- | --- |
@@ -219,43 +248,44 @@ git push  →  macos-latest runner：checkout → setup-node 22 → npm ci(根 +
     同时把该用例改为等待公式渲染到位再断言（区分「正在下载」与「真的丢失」）。
 12. 重新部署 Pages → 公网前端检查 **28/28 通过**
 
-## ⚠️ 需要用户决策的重要限制
+## ⚠️ 关于「国内打不开 pages.dev / workers.dev」—— 已由本地版解决
 
 **`workers.dev` 与 `pages.dev` 在中国大陆访问不稳定甚至被阻断。**
-
 本机实测：直连失败，必须走代理；走代理全部正常。这意味着**目标用户（大陆教师/学生）
-可能打不开这个链接**，与「一个链接即可访问」的产品目标冲突。
+可能打不开那个链接**，与「打开就能用」的产品目标冲突。
 
-可选方案（已写进 README 16.18）：
+**现状**：这已经不再是问题 —— 交付方式改为**本地免安装应用**后，程序完全跑在用户自己电脑上，
+不经过任何境外域名，也就没有可访问性问题。（这条限制只对可选的公网方案仍然成立；
+若将来仍要提供公网链接，原来的三条应对方案见下：）
+
 1. **绑定自定义域名**（推荐先试）—— 可访问性通常明显好于 `pages.dev`；
 2. 换国内可直连的静态托管（会偏离需求文档指定的 Cloudflare）；
 3. 只面向有代理的用户。
-
-建议用户在绑好自定义域名后，用手机 4G（不走代理）实测一次。
 
 ## 尚未验证（如实记录）
 
 | 项目 | 原因 |
 | --- | --- |
-| 真实 Key 的完整流式输出 | 代理无 DeepSeek Key。用户可用 `npm run check:stream` 或直接在浏览器问一句 |
-| 真机 iOS / Android | 需要实体设备；本轮仅做了视口与媒体特性模拟 |
-| 自定义域名下的可访问性 | 尚未绑定域名 |
+| 真实 Key 的完整流式输出 | 代理无 DeepSeek Key。用户可用 `npm run check:stream` 或直接在界面里问一句 |
+| macOS 云端构建的实际运行结果 | 需 GitHub Actions 跑一次；本机是 Windows，无法本地预跑 codesign / hdiutil |
+| 真机 iOS / Android | 需要实体设备；本项目现在是桌面应用，移动端浏览器不再是交付面 |
+| 真机 Mac 上的首次打开（Gatekeeper）与双击启动 | 需要带桌面的 Mac 人工确认；CI 上无 Aqua 会话时会显式跳过该项 |
 
 ## 环境注意事项
 
 - 本机有**本地代理** `http://127.0.0.1:7897`（环境变量 `HTTP_PROXY` 等已设置）。
-  - `wrangler` 会提示「Proxy environment variables detected」，属正常。
+  - `wrangler` 会提示「Proxy environment variables detected」，属正常（仅在跑可选云端方案时用到）。
   - 无头浏览器验证公网链接时需 `CHROME_PROXY=http://127.0.0.1:7897`（已给
     `scripts/ui-check.mjs` 加了该支持）。
-- 本地 git 分支为 `master`，但 Pages 生产分支是 `main` —— 部署上生产必须显式 `--branch main`。
+- 本地 git 分支为 `master`；**推送到 GitHub 仓库 `maricle-12/mac_agent` 时用的是 `main`**。
 - 临时脚本 `cf-subdomain.mjs`（注册 workers.dev 子域名用）放在系统临时目录，不在仓库内；
   它只打印 API 返回结果，不打印 Token。
 
 ## 后续可选优化
 
-1. 绑定自定义域名（解决大陆可访问性，优先级最高）；
-2. `react-markdown` 也可按需加载（约再省 40 kB gzip，代价是首屏渲染消息时闪一下）；
-3. 学科工具 / 教学资源入口目前是「即将支持」占位；
-4. 可扩展 Agent：`lessonPlan` / `examGenerator` / `errorAnalysis` / `research`
+1. `react-markdown` 也可按需加载（约再省 40 kB gzip，代价是首屏渲染消息时闪一下）；
+2. 学科工具 / 教学资源入口目前是「即将支持」占位；
+3. 可扩展 Agent：`lessonPlan` / `examGenerator` / `errorAnalysis` / `research`
    （在 `src/prompts/index.ts` 的 `basePrompts` 中扩展）；
-5. 文件上传 / 知识库 / RAG（第一版明确不做）。
+4. 文件上传 / 知识库 / RAG（第一版明确不做）；
+5. 若要额外提供公网链接：见 `docs/legacy-cloudflare-deployment.md`（可选，非必需）。

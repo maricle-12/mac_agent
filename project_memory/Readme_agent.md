@@ -2,31 +2,40 @@
 
 ## 项目目标
 
-构建一个**可公网访问的网页版 AI 教育智能体**，产品定位：
+构建一个**免安装的本地桌面 AI 教育智能体**，产品定位：
 
-> 一个链接即可访问的独立智能体。
+> 下载即用、完全在用户自己电脑上运行的独立智能体。
 
-- 用户打开 `https://xxx.pages.dev` 即可使用，无需安装任何软件、无需注册登录。
-- 用户**自带 DeepSeek API Key**（首次使用时在网页内填写），模型 Token 成本由用户自己的账户承担。
-- 运营方固定成本为 0：纯静态前端（Cloudflare Pages）+ 无状态转发 Worker（Cloudflare Workers）。
-- 第一版不含账号系统、不含云端数据库、不含云端聊天记录。
+- 用户下载后双击启动（Windows：解压 → 双击 `启动智能体.exe`；macOS：打开 dmg → 拖进「应用程序」→ 点击启动），
+  界面在浏览器里打开；**不需要安装任何环境、不需要注册登录、不需要服务器**。
+- 用户**自带 DeepSeek API Key**（首次使用时在界面里填写），模型 Token 成本由用户自己的账户承担。
+- 交付方固定成本为 0：没有服务器、没有数据库、没有云端账号；Node 运行时打进程序内部。
+- 用户数据只在用户本机：聊天历史在本机 SQLite，API Key 在本机配置文件里。
+- 不含账号系统、不含云端聊天记录。
 
 ## 技术路线
 
 ```
-用户浏览器
-  ↓  React Web App（UI / 会话管理 / 模式切换 / 本地历史 / 设置）
-  ↓  Cloudflare Worker（/api/chat，无状态转发 + CORS + 流式透传）
+用户双击启动（Windows: 启动智能体.exe ／ macOS: AI教育智能体.app）
+  ↓  启动器：单实例 / 端口选择 / 健康检查 / 打开默认浏览器（不含业务逻辑）
+  ↓  本地服务（只监听 127.0.0.1，随 Node SEA 一起打包进可执行文件）
+  ├─  静态前端：React 构建产物，与接口同源提供
+  ├─  /api/local/*：本机 SQLite（聊天历史）+ 本机配置（API Key / 模型设置）
+  ↓  POST /api/chat（同一份 worker/src/index.ts：校验 + Base URL 白名单 + 流式透传）
   ↓  DeepSeek API（OpenAI-Compatible /chat/completions, stream: true）
   ↓  SSE 流式返回，前端逐 chunk 渲染
 ```
 
-- 聊天历史：IndexedDB（浏览器本地，刷新/重开仍在，跨用户互相隔离）
-- 用户偏好：localStorage（模式、Base URL、Model 等非敏感项）
-- API Key：默认 sessionStorage；用户主动勾选「在此设备记住」后才存 localStorage
-- Worker 不保存任何 Key 与聊天内容，不写日志，不使用 KV / D1
+- 聊天历史：本机 SQLite `data/app.db`（macOS 在 `~/Library/Application Support/AI教育智能体/`）
+- 用户偏好：localStorage（模式、当前会话等纯 UI 偏好）
+- API Key：本机配置文件 `config/settings.json`，浏览器只能拿到 `sk-****abcd`
+- 转发层不保存请求正文、不外传任何数据、不使用 KV / D1
 
-## 第二条发布线：免安装便携版（Windows + macOS）
+> 早期还有一条「公网网页版」发布线（纯静态前端 + Cloudflare Worker）。**它已不再是交付路径**，
+> 教程归档在 `docs/legacy-cloudflare-deployment.md`。`worker/` 代码仍然保留，
+> 但它现在的角色是**本地服务的后端逻辑**（构建时由 esbuild 打包进可执行文件），**不能删除**。
+
+## 交付线：免安装桌面应用（Windows + macOS）
 
 同一份前端与同一份 Worker 代码，还可以被打包成**普通用户双击即用的桌面软件**：
 

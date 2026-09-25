@@ -1,9 +1,10 @@
 # AI 教育智能体
 
-> 面向教师与学生的智能学习助手 —— **一个链接即可访问的独立智能体**。
+> 面向教师与学生的智能学习助手 —— **免安装的本地桌面应用**。
 
-用户打开一个公网链接（例如 `https://xxx.pages.dev`）即可使用，无需安装软件、无需注册登录。
-首次使用时填写**自己的 DeepSeek API Key**，模型 Token 成本由用户自己的账户承担。
+Windows 下载 zip 解压后双击 `启动智能体.exe`；macOS 打开 dmg 拖进「应用程序」后点击启动。
+界面在浏览器里打开，程序完全跑在用户自己的电脑上，**不需要服务器、不需要注册登录、不需要配置任何环境**
+（Node 运行时已打进程序内部）。首次使用时填写**自己的 DeepSeek API Key**，模型 Token 成本由用户自己的账户承担。
 
 ---
 
@@ -18,38 +19,48 @@
 
 ### 核心产品原则
 
-> **用户自己提供 API Key，我们提供网页、Prompt、Agent 能力、UI、工作流。**
+> **用户自己提供 API Key，我们提供程序、Prompt、Agent 能力、UI、工作流。**
 
-- 运营方固定成本为 **0**：前端是纯静态站点，后端是无状态转发 Worker，不使用任何数据库或常驻服务器。
-- 用户数据只存在用户自己的浏览器里：聊天历史在 IndexedDB，API Key 在 sessionStorage（可选 localStorage）。
+- 使用者零门槛：下载即用，不需要安装 Node / Python / 任何开发环境（运行时已打进程序内部）。
+- 运营方固定成本为 **0**：没有服务器、没有数据库、没有云端账号；模型调用由用户本机直接打到 DeepSeek。
+- 用户数据只存在用户自己的电脑上：聊天历史在本机 SQLite（`data/app.db`），
+  API Key 在本机配置文件里（浏览器只能拿到 `sk-****abcd`），**不上传任何服务器**。
 - 没有账号系统、没有云端聊天记录、没有管理员后台。
 
 ---
 
 ## 2. 整体架构
 
+程序内部就是「本地服务 + 浏览器界面」的组合：双击启动后本地服务监听 `127.0.0.1`，
+自动用默认浏览器打开界面，之后所有请求都只在你自己这台电脑上流转。
+
 ```
-用户浏览器
-    │  ① 用户在页面输入问题
+用户双击启动（Windows: 启动智能体.exe ／ macOS: AI教育智能体.app）
+    │  ① 启动器：初始化 data/config/logs → 单实例检测 → 自动选端口 → 健康检查
     ▼
-React Web App（Cloudflare Pages 静态托管）
-    │  UI / 会话管理 / 模式切换 / 本地历史 / API 设置 / Markdown 渲染
-    │  ② POST /api/chat  { apiKey, baseUrl, model, messages, temperature }
+本地服务（只监听 127.0.0.1，随 Node SEA 一起打包进可执行文件）
+    ├─ 静态资源：内置前端（React 构建产物，与接口同源提供）
+    ├─ /api/local/*：聊天历史（SQLite data/app.db）、API 配置（config/settings.json）、导出、退出
     ▼
-Cloudflare Worker（无状态转发）
-    │  ③ 校验来源与 Base URL 白名单 → 转发 DeepSeek，透传 SSE 流
-    │  不保存 API Key、不保存聊天内容、不写日志、不使用 KV / D1
+POST /api/chat  { apiKey, baseUrl, model, messages, temperature }
+    │  ② 校验 + Base URL 白名单（防 SSRF）→ 转发 DeepSeek，透传 SSE 流
+    │  不保存请求正文、不外传任何数据
     ▼
 DeepSeek API  https://api.deepseek.com/chat/completions  (stream: true)
-    │  ④ SSE 流式返回
+    │  ③ SSE 流式返回
     ▼
-React 页面逐 chunk 实时渲染，支持「停止生成」
+浏览器页面逐 chunk 实时渲染，支持「停止生成」
 ```
 
 **各层职责划分**
 
-- **React 页面**：UI、会话管理、模式切换、本地聊天历史、API 设置、用户输入、Markdown 渲染。
-- **Worker**：接收浏览器请求、接收用户临时传入的 API Key、转发 DeepSeek、处理 CORS、透传 Streaming Response、不保存任何数据。
+- **前端（React）**：UI、会话管理、模式切换、API 设置、用户输入、Markdown / 公式渲染。
+- **本地服务**：提供静态资源；用同一份转发代码（`worker/src/index.ts`，构建时由 esbuild 打包进来）
+  做校验、白名单与流式透传；把聊天历史与配置落到本机文件。
+- **启动器**：单实例、端口选择、健康检查、打开浏览器、错误提示 —— 不含任何业务逻辑。
+
+> Cloudflare 部署方式已不再使用。想额外提供公网链接的，可参考作为历史记录保留的
+> [`docs/legacy-cloudflare-deployment.md`](docs/legacy-cloudflare-deployment.md) —— 那**不是**使用本项目所必需的步骤。
 
 ---
 
@@ -348,16 +359,18 @@ cd demo/worker && npm run check    # 38 项接口与安全自检
 
 | 变量 | 说明 | 示例 |
 | --- | --- | --- |
-| `VITE_API_ENDPOINT` | Worker 转发端点 | 开发 `http://localhost:8787/api/chat`<br>生产 `https://<worker名>.<子域>.workers.dev/api/chat` |
+| `VITE_API_ENDPOINT` | 模型转发端点 | **本地版（默认）**：`.env.portable` 里的 `/api/chat`（同源）<br>开发调试：`http://localhost:8787/api/chat`<br>云端可选方案：`https://<你的转发服务>/api/chat` |
 
-- 开发环境写在 `.env.development`，生产环境写在 `.env.production`。
-- 缺失时回退到同源 `/api/chat`。
+- **本地免安装版用 `.env.portable`（内容为 `/api/chat`），它是同源相对路径，不依赖任何已部署服务。**
+  构建命令 `npm run build:win` / `npm run build:mac` 会自动走这个模式。
+- 开发环境写在 `.env.development`；`.env.production` 仅用于可选的云端静态部署，默认为空。
+- 缺失时回退到同源 `/api/chat`（因此本地版不会因为漏配而失效）。
 - 个人临时覆盖请写入 `.env.local`（已被 `.gitignore` 忽略）。
 
 > ### ⚠️ 安全红线
 > **绝对不要**把 API Key 放进任何 `VITE_*` 环境变量。
 > Vite 会把 `VITE_` 开头的变量**打包进公开的前端产物**，任何人打开网页都能看到。
-> 用户 Key 只能由用户在网页「API 设置」中输入。
+> 用户 Key 只能由用户在界面「API 设置」中输入（本地版保存在本机配置文件里，浏览器只拿到脱敏值）。
 
 ---
 
@@ -656,289 +669,25 @@ Markdown + KaTeX 渲染，明确告知模型公式分隔符写法能显著改善
 
 ---
 
-## 14. Cloudflare 部署步骤（从零开始，含新手注意事项）
+## 14. 云端部署（可选，本项目不需要）
 
-> 目标：最后你会得到一个公网链接，例如 `https://ai-edu-agent.pages.dev`，
-> 任何人打开它、填入自己的 DeepSeek API Key 就能用。
->
-> **部署顺序很重要**：先部署 Worker（拿到它的地址），再部署前端（需要填入该地址），
-> 最后回到 Worker 把前端域名加入白名单。总共约 15 分钟。
+本项目的交付方式是**本地免安装应用**，前后端都跑在用户自己的电脑上：
 
-### 14.0 你需要准备什么
-
-| 需要 | 费用 | 说明 |
+| | Windows | macOS |
 | --- | --- | --- |
-| 一台电脑 | — | Windows / macOS 都可以 |
-| Node.js | 免费 | 见 14.1 |
-| Git | 免费 | 见 14.2，仅「方式 A」需要 |
-| Cloudflare 账号 | 免费 | 见 14.4，只需邮箱 |
-| GitHub 账号 | 免费 | **可选**，只有「方式 A」需要 |
-| DeepSeek API Key | 按量付费 | 由**每个使用者自己**提供，部署者不需要 |
-
-> 不需要：VPS、云服务器、数据库、Docker、Python、Coze、Dify。
-
-### 14.1 安装 Node.js
-
-1. 打开 <https://nodejs.org/zh-cn>，下载 **LTS** 版本（本机开发环境用的是 22 / 24）。
-2. 一路「下一步」安装完成。
-3. 打开终端（Windows 按 `Win + R` 输入 `cmd`），执行：
-
-```bash
-node -v
-npm -v
-```
-
-看到版本号即成功。**版本要求：Node ≥ 20.19（推荐 22 或更高）** —— 这是 Vite 8 的硬性要求，
-版本过低会在 Cloudflare 构建时报语法错误。
-
-### 14.2 安装 Git（仅「方式 A」需要）
-
-1. 打开 <https://git-scm.com/downloads> 下载并安装。
-2. 验证：`git --version`
-
-### 14.3 下载项目并本地跑通
-
-**先本地跑通，再去部署** —— 本地能跑，部署 99% 也能跑；本地跑不通，部署只会更难查。
-
-```bash
-# 1) 进入项目目录（把路径换成你自己的）
-cd demo
-
-# 2) 安装依赖（约 1 分钟）
-npm install
-
-# 3) 启动前端
-npm run dev
-```
-
-浏览器打开 <http://localhost:5173>。**再开一个终端**启动 Worker：
-
-```bash
-cd demo/worker
-npm install          # 首次需要
-npm run dev          # 启动在 http://127.0.0.1:8787
-```
-
-验证 Worker：浏览器打开 <http://127.0.0.1:8787/api/health> 应返回 `{"ok":true,...}`。
-
-回到网页 → 右上角「设置」→ 填入你的 DeepSeek API Key → 点「测试连接」→
-看到绿色**「连接成功」**就说明 `页面 → Worker → DeepSeek` 整条链路是通的。
-
-> **第 7 点：前端如何连接本地 Worker？**
-> 前端读的是 `.env.development` 里的 `VITE_API_ENDPOINT`，默认已写成
-> `http://localhost:8787/api/chat`。改了 `.env.*` 必须**重启** `npm run dev` 才生效。
-> 如果 Worker 换了端口，`worker/wrangler.toml` 的 `[dev] port` 与这里的地址必须一致。
-
-### 14.4 注册 Cloudflare
-
-1. 打开 <https://dash.cloudflare.com/sign-up>，用邮箱注册并验证。
-2. 登录后进入 Dashboard。**不需要**添加域名，也不需要付费。
-
-### 14.5 部署 Worker（第 11、12 点）
-
-```bash
-cd demo/worker
-npx wrangler login        # 首次：会打开浏览器让你授权，点 Allow
-npx wrangler deploy
-```
-
-成功后会输出类似：
-
-```
-Uploaded ai-edu-agent-api
-Deployed ai-edu-agent-api triggers
-  https://ai-edu-agent-api.<你的子域>.workers.dev
-```
-
-**把这一行地址记下来**，下一步要用。它对应的接口是
-`https://ai-edu-agent-api.<你的子域>.workers.dev/api/chat`。
-
-验证：浏览器打开 `https://ai-edu-agent-api.<你的子域>.workers.dev/api/health`，
-应返回 `{"ok":true,...}`。
-
-> 如果想改 Worker 名字，修改 `worker/wrangler.toml` 第一行的 `name`。
-> 该名字决定最终域名，改名后记得重新记地址。
-
-### 14.6 部署前端到 Cloudflare Pages（第 9、10 点）
-
-有两种方式，**方式 B 更简单**（不需要 GitHub），推荐新手先用 B。
-
-#### 方式 B：直接上传（推荐，最快）
-
-```bash
-cd demo
-npm run build                                  # 生成 dist/
-npx wrangler pages deploy dist --project-name ai-edu-agent
-```
-
-首次执行会让你选择/创建一个 Pages 项目，之后会输出访问地址，形如
-`https://ai-edu-agent.pages.dev`。**把前端地址记下来**，下一步要用。
-
-#### 方式 A：连接 GitHub（适合以后想自动部署）
-
-1. 把代码推到 GitHub（先 `git remote add origin <你的仓库>`，再 `git push -u origin main`）。
-   > ⚠️ 推送前确认 `.env.local` / `.dev.vars` 没有被提交（`.gitignore` 已处理），
-   > 项目里也**不应该有任何真实 API Key**。
-2. Cloudflare Dashboard → **Workers & Pages** → **Create** → **Pages** → **Connect to Git**。
-3. 选择你的仓库，然后填写构建配置：
-
-| 配置项 | 值 |
-| --- | --- |
-| Framework preset | `None`（或 Vite） |
-| Build command | `npm run build` |
-| Build output directory | `dist` |
-| 环境变量 `NODE_VERSION` | `22` |
-
-> `NODE_VERSION=22` **很重要**：Pages 构建镜像的默认 Node 可能低于 Vite 8 要求的 20.19。
-> 项目里已放了 `.node-version` 与 `.nvmrc`（内容都是 `22`）作为兜底，
-> 但显式设置环境变量最稳妥。
-
-4. 点 **Save and Deploy**。完成后同样会得到 `https://<项目名>.pages.dev`。
-
-### 14.7 把 Worker 地址告诉前端（第 13 点）
-
-前端需要知道 Worker 的地址。**推荐用 Pages 环境变量**（不用改代码、不用提交）：
-
-1. Cloudflare Dashboard → **Workers & Pages** → 选中你的 Pages 项目 →
-   **Settings** → **Environment variables**（生产环境 Production）。
-2. 新增一条：
-
-| 变量名 | 值 |
-| --- | --- |
-| `VITE_API_ENDPOINT` | `https://ai-edu-agent-api.<你的子域>.workers.dev/api/chat` |
-
-3. 回到 **Deployments** → 对最新一次部署点 **Retry deployment**（必须重新构建才生效，
-   因为 Vite 是在构建时把该变量写进产物的）。
-
-> **已验证**：Cloudflare Pages 的环境变量会**覆盖**仓库里的 `.env.production`，
-> 所以不需要去改那个占位符，也不需要再提交一次代码。
-
-<details>
-<summary>替代做法：直接改 <code>.env.production</code>（需要提交并重新部署）</summary>
-
-```bash
-# 编辑 demo/.env.production，把占位符换成你的真实地址
-VITE_API_ENDPOINT=https://ai-edu-agent-api.<你的子域>.workers.dev/api/chat
-```
-
-```bash
-npm run build
-npx wrangler pages deploy dist --project-name ai-edu-agent
-```
-
-该地址会出现在前端产物里（这是正常的、公开的信息），但**绝不要**把 API Key 写进任何 `.env` 文件。
-</details>
-
-### 14.8 配置 CORS 白名单（第 14 点，最容易漏的一步）
-
-Worker 默认只允许本地端口访问。现在要把它改成允许你的 Pages 域名，否则网页会报
-`blocked by CORS policy`。
-
-编辑 `demo/worker/wrangler.toml`：
-
-```toml
-[vars]
-ALLOWED_ORIGINS = "https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev"
-```
-
-⚠️ **两个都要写**：
-
-- `https://ai-edu-agent.pages.dev` —— 正式域名（apex）；
-- `https://*.ai-edu-agent.pages.dev` —— 每次推送产生的预览域名。
-
-通配符 `*.x.pages.dev` **不包含** `x.pages.dev` 本身，只写通配符会导致正式域名被拒。
-
-本地端口（5173 / 4173 / 4180）在生产环境可以删掉，只留 Pages 域名更安全。
-如果以后还要在本地连线上 Worker，再把它们加回去。
-
-然后重新部署 Worker：
-
-```bash
-cd demo/worker
-npx wrangler deploy
-```
-
-### 14.9 最终测试（第 15 点）
-
-在**手机浏览器**或另一台电脑上打开 `https://ai-edu-agent.pages.dev`，依次确认：
-
-1. 页面能打开，左侧 / 顶部显示「AI 教育智能体」；
-2. 首次进入显示欢迎引导与「配置 DeepSeek API」按钮；
-3. 填入自己的 DeepSeek API Key → 点「测试连接」→ 显示绿色**「连接成功」**；
-4. 输入「帮我设计一节小学二年级数学《分类与整理》课程」→ 回答**逐字出现**（流式）；
-5. 生成过程中点「停止生成」→ 已输出内容保留；
-6. 点「重新生成」→ 重新流式输出，且问题不会变成两条；
-7. **按 F5 刷新** → 聊天记录仍在；
-8. 关闭浏览器标签页再打开 → 历史仍在（若勾选了「在此设备记住 API Key」，无需重新输入）；
-9. 悬停（手机上一直可见）会话的「⋯」→ 重命名 / 删除都可用；
-10. 设置里「清除本地聊天记录」→ 确认 → 列表清空。
-
-### 14.10 以后如何更新
-
-| 改动内容 | 需要做什么 |
-| --- | --- |
-| 改前端（UI / Prompt / 逻辑） | `npm run build` → `npx wrangler pages deploy dist --project-name ai-edu-agent`（方式 A 则只需 push） |
-| 改 Worker（转发逻辑 / 白名单） | `cd worker && npx wrangler deploy` |
-| 改产品名称 / 副标题 | 只改 `src/config/app.ts` 后重新部署前端 |
-| 改 System Prompt | 只改 `src/prompts/*.ts` 后重新部署前端（新请求立即生效） |
-| 改品牌配色 | 只改 `src/index.css` 的 `@theme` 后重新部署前端 |
-
-### 14.11 本次部署实录（真实地址与踩到的坑）
-
-本项目已按上述流程部署完成，实际使用的值如下，可作为对照：
-
-| 项 | 值 |
-| --- | --- |
-| Cloudflare 账号 | `2750366148@qq.com` 的账号 |
-| workers.dev 子域名 | `edu-demo-2026`（首选 `edu-demo` 已被占用） |
-| Worker 名 / 地址 | `ai-edu-agent-api` → https://ai-edu-agent-api.edu-demo-2026.workers.dev |
-| Pages 项目 / 地址 | `ai-edu-agent` → https://ai-edu-agent.pages.dev |
-| `ALLOWED_ORIGINS` | `https://ai-edu-agent.pages.dev,https://*.ai-edu-agent.pages.dev` + 本地端口 |
-
-**踩到的 6 个坑（都已解决，你可能会遇到其中的某些）**：
-
-1. **没有 workers.dev 子域名 → 部署直接失败**
-   报 `You need to register a workers.dev subdomain before publishing to workers.dev`。
-   这是**账号级一次性设置**，去 Workers & Pages 首页（或 API）注册即可。
-   子域名全 Cloudflare 唯一，`edu-demo` 就被占用了。
-
-2. **新注册的子域名的 DNS 需要等一会儿**
-   刚注册完立即访问会失败（本机解析甚至返回了错误的 IP）。
-   等约 1 分钟即正常，wrangler 输出的地址本身是对的。
-
-3. **本地 git 分支名会影响部署环境**
-   本地分支是 `master`，而项目生产分支是 `main`，直接 `wrangler pages deploy` 会部署成
-   **Preview**（`master.xxx.pages.dev`）。要上生产域名必须显式指定：
-
-   ```bash
-   npx wrangler pages deploy dist --project-name ai-edu-agent --branch main --commit-dirty=true
-   ```
-
-4. **`[vars]` 改动后边缘生效有延迟**
-   改完 `ALLOWED_ORIGINS` 重新部署，`/api/health` 里的 `allowedOrigins` 可能还要
-   半分钟到一分钟才变。不要以为没生效就反复改。
-
-5. **国内网络访问 `*.workers.dev` / `*.pages.dev` 需要代理**
-   本机直连被阻断，必须走代理才能打开。这一点对**你的用户**同样成立 ——
-   见 16.18。
-
-6. **懒加载的公式分块在慢网络下会「晚一步」**
-   首屏不含 KaTeX（这是体积优化），刷新后若第一眼就要渲染带公式的历史消息，
-   会先看到一瞬间的原始 `$$...$$`。已通过「浏览器空闲时预取公式分块」缓解
-   （`MarkdownRenderer.tsx` 的 `prefetchMathChunk`），首屏体积不受影响。
-
-### 14.12 部署后的验证结果
-
-| 验证 | 方式 | 结果 |
-| --- | --- | --- |
-| 前端可访问 | `curl https://ai-edu-agent.pages.dev` | ✅ HTTP 200 |
-| Worker 健康检查 | `GET /api/health` | ✅ `{"ok":true,...,"allowedOrigins":8}` |
-| Pages 域名预检 | `OPTIONS /api/chat` + `Origin: https://ai-edu-agent.pages.dev` | ✅ 204 + 正确的 ACAO |
-| 未授权来源被拒 | `Origin: https://evil.example.com` | ✅ 403 `origin_not_allowed` |
-| 真实上游转发 | 假 Key POST（非流式与流式） | ✅ 401 `invalid_api_key` + 中文提示，Key 脱敏为 `****0000` |
-| SSRF 防护 | `baseUrl: https://evil.example.com` | ✅ 400 `base_url_not_allowed` |
-| Worker 全量自检 | `node worker/test/worker-check.mjs <线上地址>` | ✅ **38/38 通过** |
-| 前端全量检查 | 无头浏览器打公网链接（走代理） | ✅ **28/28 通过** |
+| 交付物 | `AI教育智能体_v<版本>_Windows.zip` | `AI教育智能体_v<版本>_macOS_universal.dmg` |
+| 用户操作 | 解压 → 双击 `启动智能体.exe` | 打开 dmg → 拖进「应用程序」→ 点击启动 |
+| 后端 | 本机 Node SEA 可执行文件内的本地服务（只监听 `127.0.0.1`） | 同左 |
+| 构建 | `npm run build:win` / `build_release.bat` | `npm run build:mac` / GitHub Actions（`Build macOS`） |
+
+- **不需要** Cloudflare、不需要服务器、不需要域名、不需要数据库。
+- 聊天记录与 API Key 都存在用户自己的电脑上（SQLite + 本机配置文件），不上传任何服务器。
+- 构建与验收细节：[`packaging/MACOS.md`](packaging/MACOS.md)、[`packaging/TESTING.md`](packaging/TESTING.md)。
+
+> **可选**：如果你确实想额外提供一个公网链接（例如给不方便安装软件的用户），
+> 仍然可以把前端部署成纯静态站点、把 `worker/` 部署成无状态转发服务。
+> 那份从零开始的教程已移到 [`docs/legacy-cloudflare-deployment.md`](docs/legacy-cloudflare-deployment.md)，
+> 属于历史记录，**不是**使用本项目所必需的步骤。
 
 ---
 
@@ -946,42 +695,55 @@ npx wrangler deploy
 
 对应需求文档第五十二条，逐条给出验证方式。`npm run check:ui` 会自动覆盖其中大部分。
 
+> **说明**：这张表来自最初「公网网页版」的需求文档。本项目现在的交付方式是**本地免安装应用**，
+> 因此下表中凡涉及「公网链接 / 云端部署 / 浏览器存储」的条目，都以**本地版的实际行为为准**
+> （已在表中标注）。云端相关条目保留为可选历史能力，不是必需的。
+> 本地版的完整验收清单见 [`packaging/TESTING.md`](packaging/TESTING.md)。
+
 | # | 验收项 | 状态 | 验证方式 |
 | --- | --- | --- | --- |
-| 1 | 打开公网链接能够显示页面 | ✅ | https://ai-edu-agent.pages.dev 返回 200，无头浏览器 28/28 通过 |
+| 1 | 启动后能显示界面 | ✅ | 双击启动后自动打开浏览器界面；发行包自检断言首页与全部静态资源可访问 |
 | 2 | 不登录即可使用 | ✅ | 无账号系统，直接可用 |
 | 3 | 可以填写 DeepSeek API Key | ✅ | 设置弹窗；ui-check「API 设置弹窗」 |
-| 4 | API Key 不写死在源码 | ✅ | `git grep 'sk-[A-Za-z0-9]{20,}'` 无结果；产物扫描无密钥 |
+| 4 | API Key 不写死在源码 | ✅ | `git grep 'sk-[A-Za-z0-9]{20,}'` 无结果；发行包扫描无密钥 |
 | 5 | 可以测试 API | ✅ | 「测试连接」（成功 / 失败两条分支均有自动化用例） |
-| 6 | DeepSeek 能正常回答 | ⏳ 需你的 Key | 用真实 Key 在浏览器里问一句；或 `npm run check:stream` |
+| 6 | DeepSeek 能正常回答 | ⏳ 需你的 Key | 用真实 Key 在界面里问一句；或 `npm run check:stream` |
 | 7 | AI 使用 Streaming 输出 | ✅ | ui-check「流式增量渲染」断言内容随时间增长 |
 | 8 | 能停止生成 | ✅ | ui-check「停止生成」断言保留内容且 AbortSignal 触发 |
 | 9 | 教师模式 Prompt 正确 | ✅ | ui-check 拦截请求体断言 system 内容 |
 | 10 | 学生模式 Prompt 正确 | ✅ | 同上（且不含教师 Prompt） |
 | 11 | 可以新建对话 | ✅ | 侧边栏「新建对话」；ui-check 覆盖 |
-| 12 | 历史记录本地保存 | ✅ | IndexedDB；ui-check 直接读库校验 |
+| 12 | 历史记录本地保存 | ✅ | **本机 SQLite（`data/app.db`）**，与浏览器和端口无关；ui-check 直接读库校验 |
 | 13 | 刷新后聊天不会消失 | ✅ | ui-check「历史记录持久化」 |
 | 14 | 可以删除历史记录 | ✅ | ⋯ → 删除；ui-check「删除后刷新不复活」 |
 | 15 | 可以重新生成 | ✅ | ui-check「重新生成不重复用户消息」 |
 | 16 | 可以复制 AI 回答 | ✅ | 消息下方「复制」按钮（含降级方案） |
 | 17 | API 错误有友好提示 | ✅ | 第 12 章错误对照表（13 种场景） |
 | 18 | 页面手机端可使用 | ✅ | ui-check 4 种尺寸 + 触摸目标 + 窄屏常显操作按钮 |
-| 19 | Cloudflare Pages 部署正常 | ✅ | https://ai-edu-agent.pages.dev（Production / main） |
-| 20 | Worker 部署正常 | ✅ | https://ai-edu-agent-api.edu-demo-2026.workers.dev，线上自检 38/38 |
-| 21 | 不需要 VPS | ✅ | 纯静态 + 无状态 Worker |
-| 22 | 不需要数据库 | ✅ | IndexedDB 在浏览器本地；Worker 无 KV / D1 |
+| 19 | ~~Cloudflare Pages 部署正常~~ | ⚪ 可选 | 已不再是交付路径；历史记录见 [`docs/legacy-cloudflare-deployment.md`](docs/legacy-cloudflare-deployment.md) |
+| 20 | ~~Worker 部署正常~~ | ⚪ 可选 | 同上（`worker/` 代码仍在，本地版把它打包进程序内部使用） |
+| 21 | 不需要 VPS | ✅ | 本地版连转发服务都是本机进程；云端可选方案也不需要 VPS |
+| 22 | 不需要外部数据库 | ✅ | 本地版用单文件 SQLite（`data/app.db`）；云端可选方案无 KV / D1 |
 | 23 | 不需要 Coze / Dify | ✅ | 未使用任何低代码 Agent 平台 |
-| 24 | 用户模型费用由自己的 API Key 承担 | ✅ | Key 由用户输入，Worker 不持有任何 Key |
+| 24 | 用户模型费用由自己的 API Key 承担 | ✅ | Key 由用户输入；**只存在用户本机配置文件里**，不上传任何服务器 |
 
 标记 ⏳ 的条目需要你自己的 DeepSeek API Key 才能确认（我没有 Key，只能验证到「假 Key 打通链路」这一层）。
 
-**已由代理在公网环境验证的（非本地模拟）**：前端可访问、Worker 健康检查、
-CORS 白名单放行与拒绝、真实上游 401 映射与密钥脱敏、SSRF 防护、
-Worker 全量自检 38/38、前端全量检查 28/28 —— 详见 14.12。
+**发行包层面的验收（本地版）**：Windows `19/19` 静态断言 + `25/25` 发行包自检；
+macOS 逐架构静态断言 + 发行包自检 + DMG 挂载验收 + zip 解压后签名复验 —— 见 [`packaging/TESTING.md`](packaging/TESTING.md)。
+
+**历史上在公网环境做过的验证**（可选方案，非当前交付路径）：前端可访问、转发服务健康检查、
+CORS 白名单放行与拒绝、真实上游 401 映射与密钥脱敏、SSRF 防护、线上自检 38/38 ——
+记录见 [`docs/legacy-cloudflare-deployment.md`](docs/legacy-cloudflare-deployment.md)。
 
 ---
 
 ## 16. 常见问题排查
+
+> **本节包含两部分**：16.1～16.8 与 16.14～16.17 是通用的（开发与本地版都适用）；
+> **16.9～16.13 与 16.18～16.19 是「云端可选方案 / 本地 wrangler 转发」专用的**
+> （涉及 CORS、`origin_not_allowed`、`wrangler dev`、`pages.dev` 可访问性等）。
+> 本地免安装版不走这些路径，遇到问题请优先看 [`packaging/MACOS.md`](packaging/MACOS.md) 的故障排查章节。
 
 ### 16.1 `npm install` 很慢或失败
 

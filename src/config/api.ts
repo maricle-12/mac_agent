@@ -2,7 +2,8 @@
  * API 相关配置。
  *
  * 注意：这里永远不存放 API Key。
- * 用户 Key 由用户在「API 设置」中输入，仅存于浏览器（sessionStorage / 可选 localStorage）。
+ * 用户 Key 由用户在「API 设置」中输入：本地免安装版保存在本机配置文件里（浏览器只拿到脱敏值），
+ * 纯网页版则保存在浏览器存储中。
  */
 
 /** 支持的模型服务（第一版仅 DeepSeek，架构上保留 OpenAI-Compatible 扩展位） */
