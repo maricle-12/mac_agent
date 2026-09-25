@@ -344,6 +344,32 @@ const WIN_HOME = 'C:\\Users\\tester'
     }
   }
   check('packaging/src 的相对 require 全部可解析（或指向已声明的构建产物）', unresolved.length === 0, unresolved.join('; '))
+
+  // ---- 架构名归一化（同一次 macOS CI 失败的第二类根因）----
+  // 故障现象：`x64 二进制架构不符：实际 x86_64`。
+  // 根因：拿 Mach-O 头部的架构名（x86_64）直接和 Node 分发包的架构名（x64）比较；
+  //       arm64 在两套命名里同名，所以只有 x64 会暴露。
+  // 下面把「不许跨命名体系直接比较」固化下来。
+  const machoSource = fs.readFileSync(path.join(packagingDir, 'scripts', 'macho.mjs'), 'utf8')
+  check('macho.mjs 声明了架构族映射表 ARCH_FAMILIES', machoSource.includes('ARCH_FAMILIES'))
+  check('macho.mjs 提供 archFamily / sameArch 归一化函数', machoSource.includes('export function archFamily') && machoSource.includes('export function sameArch'))
+  check(
+    'macho.mjs 的映射覆盖 x64 的三种写法与 arm64 的别名',
+    /x64:\s*\[[^\]]*'x64'[^\]]*'x86_64'[^\]]*'amd64'[^\]]*\]/.test(machoSource) &&
+      /arm64:\s*\[[^\]]*'arm64'[^\]]*'aarch64'[^\]]*\]/.test(machoSource),
+  )
+  check('macho.mjs 的 readMachO 同时返回原始架构名与归一化架构族', machoSource.includes('archFamilies:') && machoSource.includes('archFamily:'))
+
+  check('build-mac.mjs 用 sameArch 做架构断言（跨命名体系安全）', macBuildSource.includes('sameArch('))
+  check(
+    'build-mac.mjs 不再把 macho.arch 与 x64/arm64 直接比较',
+    !/macho\.arch\s*(===|!==)/.test(macBuildSource),
+  )
+  check(
+    'build-mac.mjs 不再用 raw macho.arches.includes 判断架构（x86_64 永远匹配不到 x64）',
+    !/\.arches\.includes\(/.test(macBuildSource),
+  )
+  check('build-mac.mjs 用 archFamilies 判断通用包与静态断言', (macBuildSource.match(/archFamilies/g) || []).length >= 2)
 }
 
 // ---------------------------------------------------------------- 输出

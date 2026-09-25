@@ -26,7 +26,58 @@ git push  →  macos-latest runner：checkout → setup-node 22 → npm ci(根 +
 | 架构 | 默认 universal（arm64 复用 runner 的 Node，x64 从 nodejs.org 下载并校验 SHA-256，再 lipo 合成） |
 | 分钟数 | 仓库公开后标准 runner **免费不限量**（私有仓库时 macOS 按 10 倍计费，现已无此顾虑） |
 
-### ⚠️ 第一次真实运行的失败与修复（Worker 产物路径不一致）
+### ⚠️ 第二次 CI 失败与修复（架构名跨命名体系比较）
+
+Worker 产物问题修复后，CI 走到了 `[6/10]`，报：
+
+```
+[6/10] 生成 x64 的可执行文件（Node SEA 注入 + ad-hoc 签名）
+x64 二进制架构不符：实际 x86_64
+```
+
+**根因**：同一个架构在两套命名体系里写法不同，代码却直接比较了：
+
+| 体系 | 写法 |
+| --- | --- |
+| Node 官方 darwin 分发包 / `--arch` / `process.arch` | `x64`、`arm64` |
+| Mach-O 头部里的 `cputype`（`readMachO` 解析出来的） | `x86_64`、`arm64` |
+
+`arm64` 在两套命名里同名，所以 arm64 先通过了，只有 x64 暴露。
+
+**同一个错误其实有三处**（另外两处不会立刻报错，更危险）：
+
+| 位置 | 未修复时的后果 |
+| --- | --- |
+| `buildArch()` 里 `macho.arch !== arch` | **CI 报错的那一处**（x86_64 ≠ x64） |
+| 通用包判定 `macho.arches.includes('x64')` | 永远为假 → 通用包被误判为「合成失败」→ **静默降级**为分架构 DMG（日志只提示一句，很容易被忽略） |
+| 静态断言 `macho.arches.includes(arch)` | x64 / universal 两个目标都会**误报失败** |
+
+**修复**：在 `macho.mjs` 里建立架构族归一化，所有比较统一走它。
+
+| 改动 | 作用 |
+| --- | --- |
+| 新增 `ARCH_FAMILIES`（`arm64: [arm64, aarch64, arm64e]`、`x64: [x64, x86_64, amd64, x86-64]`） | 映射表单点声明 |
+| 新增 `archFamily(name)` / `sameArch(a, b)` | 归一化与跨体系比较；未知名字返回 `null`，不会被猜成某个族 |
+| `readMachO()` 同时返回两套信息 | `arch` / `arches`（原始名，用于显示排查）与 `archFamily` / `archFamilies`（归一化族，**用于所有断言**） |
+| `build-mac.mjs` 三处比较全部改用 `sameArch()` / `archFamilies` | 断言、通用包判定、静态检查一致 |
+| `resolveNodeBinary()` 的本机架构判断改用 `archFamily(process.arch)` | 与 `--arch` 参数同一套命名 |
+
+**防复发**：`check:paths` 新增 8 条断言（禁止 `.arches.includes(` 与 `macho.arch !==` 这类跨体系比较、要求使用
+`sameArch(`/`archFamilies`、要求映射表覆盖三类别名）；`check:mac-assets` 新增 14 条（映射表本身、
+`x86_64 ↔ x64` 这一对、以及合成 thin/fat Mach-O 的架构族是否符合 `--arch` 目标集合）。
+
+**修复后已实测**：
+
+- **用真实的 Node 官方 darwin 二进制验证**（下载 + 官方 `SHASUMS256.txt` SHA-256 校验通过）：
+  - `node-v24.15.0-darwin-arm64` → Mach-O 原始名 `arm64` → 架构族 `arm64` → `sameArch(…, 'arm64') = true`
+  - `node-v24.15.0-darwin-x64` → Mach-O 原始名 **`x86_64`** → 架构族 `x64` → **`sameArch('x86_64', 'x64') = true`**
+    （这正是 CI 上失败的那一条断言，现在通过；同时确认未被误判成 arm64、未注入不被误判为已注入）
+  - 说明：本机 Node 是 v24，CI 用 v22；架构名只由 Mach-O 的 cputype 决定，与 Node 版本无关，
+    且两种 cputype 另有合成样本断言覆盖。
+- `check:paths` **50/50**、`check:mac-assets` **37/37**、`check:mac-build` 通过、`build:win` **19/19 + 25/25**。
+- 确认 `dmg.mjs` 不涉及任何架构判断，无需修改（用户要求检查的三个文件中它是干净的）。
+
+### ⚠️ 第一次 CI 失败与修复（Worker 产物路径不一致）
 
 **失败点**：`[3/10]` 打包 Worker 之后，`[4/10]` 打包启动器时报
 
@@ -65,19 +116,22 @@ esbuild 打包启动器时会静态解析这句 require，于是直接解析失�
   自动补生成并成功打包启动器（不再依赖调用顺序）。
 - **失败提示**：临时改名 `worker/src/index.ts` 触发失败 → 输出 `worker build failed` + 具体原因，
   抛出的错误信息明确指向该步骤（验证后源文件已还原，无残留）。
-- `npm run check:paths` **42/42**（含 9 条新增的构建期路径不变量断言）、`npm run check:mac-assets` **23/23**。
+- `npm run check:paths` **42/42**（当时；加完架构断言后为 50/50）、`npm run check:mac-assets` **23/23**
+  （当时；加完架构断言后为 37/37）。
 - `npm run build:win` **19/19 静态断言 + 25/25 发行包自检**，体积与改造前完全一致。
 
 ### 仍未实测（需要下一次 GitHub Actions 运行确认）
 
 | 项目 | 说明 |
 | --- | --- |
-| 云端 macOS 构建能否走完 | 前半段（到 SEA blob）已在 Windows 上验证通过；后半段 `codesign` / `hdiutil` / `lipo` 仍需在 runner 上真跑 |
+| 云端 macOS 构建能否走完 | 前半段（到 SEA blob）已在 Windows 上验证通过；架构断言已用**真实官方 darwin 二进制**验证；
+后半段 `codesign` / `hdiutil` / `lipo` 仍需在 runner 上真跑 |
 | runner 上 `codesign` / `hdiutil` / `lipo` 的行为 | 已用 `Show runner environment` 步骤把版本与可用性打进日志 |
 | runner 上是否有 Aqua 图形会话 | 有则真验「双击启动」，无则跳过并打印原因（两种都不会导致构建失败） |
 
-> 说明：本会话**没有 GitHub Token**，无法读取 Actions 日志。若再次失败，请把失败步骤名称 + 完整日志发回来；
-> 现在 `Could not resolve "../build/worker.cjs"` 这一类问题已由 `check:paths` 的不变量断言 + `check:mac-build` 预检兜住。
+> 说明：本会话**没有 GitHub Token**，无法读取 Actions 日志。若再次失败，请把失败步骤名称 + 完整日志发回来。
+> 到目前为止的两次失败（Worker 产物路径、架构名跨体系比较）都已定位到根因、修复并加了静态断言防复发，
+> 且都做了「用真实产物/真实二进制」的验证 —— 这两类问题不应再出现。
 
 ## macOS 本地构建（v1.0.1，代码与打包线已完成）
 

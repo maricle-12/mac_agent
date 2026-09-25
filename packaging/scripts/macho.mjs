@@ -28,6 +28,46 @@ function cpuTypeName(cputype) {
   return `unknown(0x${cputype.toString(16)})`
 }
 
+// ---------------------------------------------------------------- 架构名称归一化
+//
+// 同一个架构在不同体系里有不同写法，必须归一化之后才能比较：
+//
+//   Node 官方 darwin 分发包 / --arch 参数 / npm 的 process.arch  →  x64、arm64
+//   Mach-O 头部里的 cputype（也就是本文件解析出来的值）          →  x86_64、arm64
+//
+// 本项目真实踩过这个坑：build-mac.mjs 里用 `macho.arch !== arch` 断言，
+// arm64 正好同名所以先过了，x64 就会报「x64 二进制架构不符：实际 x86_64」。
+// 因此凡是要比较架构的地方，一律用下面的 sameArch() / archFamilies，
+// 不允许拿 Mach-O 的原始名字去和 x64 / arm64 直接比。
+export const ARCH_FAMILIES = {
+  arm64: ['arm64', 'aarch64', 'arm64e'],
+  x64: ['x64', 'x86_64', 'amd64', 'x86-64'],
+}
+
+const ARCH_ALIASES = (() => {
+  const map = new Map()
+  for (const [family, names] of Object.entries(ARCH_FAMILIES)) {
+    map.set(family.toLowerCase(), family)
+    for (const name of names) map.set(name.toLowerCase(), family)
+  }
+  return map
+})()
+
+/**
+ * 把任意写法的架构名归一到架构族（'arm64' | 'x64'），未知返回 null。
+ * 例：'x86_64' → 'x64'，'aarch64' → 'arm64'，'universal' → null
+ */
+export function archFamily(name) {
+  if (typeof name !== 'string') return null
+  return ARCH_ALIASES.get(name.trim().toLowerCase()) ?? null
+}
+
+/** 两个架构名是否属于同一个架构族（跨命名体系安全） */
+export function sameArch(a, b) {
+  const familyA = archFamily(a)
+  return familyA !== null && familyA === archFamily(b)
+}
+
 /** 读取固定长度（NUL 结尾）的字符字段 */
 function readName(buffer, offset, length) {
   const raw = buffer.subarray(offset, offset + length)
@@ -73,7 +113,10 @@ function readThinSlice(buffer, base) {
   }
 
   return {
+    // Mach-O 头部里的原始名字（x86_64 / arm64）—— 如实反映文件内容
     arch: cpuTypeName(cputype),
+    /** 归一化后的架构族（x64 / arm64）；未知则为 null */
+    archFamily: archFamily(cpuTypeName(cputype)),
     cputype,
     cpusubtype,
     filetype,
@@ -84,8 +127,12 @@ function readThinSlice(buffer, base) {
 
 /**
  * 读取一个 Mach-O（thin 或 fat/universal）。
+ *
+ * 返回里同时给两套架构信息，用途不同、不要混用：
+ *   arch / arches            Mach-O 头部里的原始名字（x86_64 / arm64），用于显示与排查
+ *   archFamily / archFamilies 归一化后的架构族（x64 / arm64），**用于所有断言与比较**
  * @param {string} filePath
- * @returns {{ format: 'thin'|'fat', arch: string, arches: string[], slices: Array<any>, seaBlobInjected: boolean, fuseEnabled: boolean }}
+ * @returns {{ format: 'thin'|'fat', arch: string, arches: string[], archFamily: string|null, archFamilies: string[], slices: Array<any>, seaBlobInjected: boolean, fuseEnabled: boolean }}
  */
 export function readMachO(filePath) {
   const buffer = fs.readFileSync(filePath)
@@ -121,8 +168,12 @@ export function readMachO(filePath) {
 
   return {
     format,
+    // 原始名（给人看 / 排查用）
     arch: slices.length === 1 ? slices[0].arch : 'universal',
     arches: slices.map((slice) => slice.arch),
+    // 归一化后的架构族（给断言用）
+    archFamily: slices.length === 1 ? slices[0].archFamily : null,
+    archFamilies: slices.map((slice) => slice.archFamily).filter(Boolean),
     slices,
     seaBlobInjected,
     fuseEnabled: hasEnabledSeaFuse(filePath),

@@ -40,7 +40,7 @@ import { inject } from 'postject'
 
 import { generateMacIconAssets } from './icon.mjs'
 import { buildPlist, parsePlistTopLevel } from './plist.mjs'
-import { readMachO, hasEnabledSeaFuse, SEA_SEGMENT_NAME, SEA_RESOURCE_NAME } from './macho.mjs'
+import { readMachO, hasEnabledSeaFuse, sameArch, archFamily, ARCH_FAMILIES, SEA_SEGMENT_NAME, SEA_RESOURCE_NAME } from './macho.mjs'
 import { createDmg, verifyDmg } from './dmg.mjs'
 import { smokeTest } from './smoke-test.mjs'
 import {
@@ -142,7 +142,8 @@ async function resolveNodeBinary(arch) {
   }
 
   // 本机 node 的架构与目标一致时直接复用（Apple 芯片机器上构建 arm64 版走这条路）
-  const localArch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : null
+  // 注意归一到架构族：npm 的 process.arch 是 'x64'/'arm64'，与 --arch 参数同一套命名。
+  const localArch = archFamily(process.arch)
   if (localArch === arch) {
     log('6/10', `复用本机 node 二进制（${arch}，版本 ${NODE_VERSION}）：${process.execPath}`)
     return process.execPath
@@ -329,10 +330,16 @@ async function buildArch({ arch, blobPath }) {
   await injectAndSign({ nodeBinary, blobPath, outBinary: rawBinary })
 
   const macho = readMachO(rawBinary)
-  if (macho.arch !== arch) fail(`${arch} 二进制架构不符：实际 ${macho.arch}`)
+  // 用 sameArch 做跨命名体系比较：Node 的分发包叫 darwin-x64，Mach-O 头部里是 x86_64。
+  // 直接拿 macho.arch 和 'x64' 比会误判（arm64 恰好同名，所以只有 x64 会暴露）。
+  if (!sameArch(macho.arch, arch)) {
+    fail(
+      `${arch} 二进制架构不符：期望 ${arch}（Mach-O 里叫 ${ARCH_FAMILIES[arch].join(' / ')}），实际 ${macho.arch}`,
+    )
+  }
   if (!macho.seaBlobInjected) fail(`${arch} 二进制里没有找到 NODE_SEA 段中的 __NODE_SEA_BLOB 分节`)
   if (!macho.fuseEnabled) fail(`${arch} 二进制的 SEA fuse 没有翻开（注入未真正生效）`)
-  note(`架构 ${macho.arch} · SEA 分节已注入 · fuse 已翻开 · ${humanSize(fs.statSync(rawBinary).size)}`)
+  note(`架构 ${macho.arch}（= ${macho.archFamily}）· SEA 分节已注入 · fuse 已翻开 · ${humanSize(fs.statSync(rawBinary).size)}`)
 
   return rawBinary
 }
@@ -453,18 +460,27 @@ async function main() {
     })
     if (lipo.status === 0) {
       const macho = readMachO(universalPath)
-      if (macho.format === 'fat' && macho.arches.includes('arm64') && macho.arches.includes('x64') && macho.seaBlobInjected) {
+      // 用 architecture family 判断：macho.arches 里是 ['arm64', 'x86_64']，
+      // 直接 includes('x64') 永远为假 —— 那会导致通用包被误判为「合成失败」而静默降级。
+      const universalFamiliesOk =
+        macho.archFamilies.includes('arm64') && macho.archFamilies.includes('x64')
+      if (macho.format === 'fat' && universalFamiliesOk && macho.seaBlobInjected) {
         fs.chmodSync(universalPath, 0o755)
         const signed = spawnSync(UNIX_BIN.codesign, ['--force', '--sign', '-', universalPath], { encoding: 'utf8' })
         if (signed.status === 0) {
           finalBinary = universalPath
           usedUniversal = true
-          log('6/10', `已合成通用二进制（lipo）：${macho.arches.join(' + ')} · ${humanSize(fs.statSync(universalPath).size)}`)
+          log(
+            '6/10',
+            `已合成通用二进制（lipo）：${macho.arches.join(' + ')}（= ${macho.archFamilies.join(' + ')}）· ${humanSize(fs.statSync(universalPath).size)}`,
+          )
         } else {
           note(`通用二进制签名失败，降级为分架构打包：${(signed.stderr || '').trim().split('\n')[0]}`)
         }
       } else {
-        note(`lipo 产物不是预期的双架构 Mach-O（实际 ${macho.arch}），降级为分架构打包`)
+        note(
+          `lipo 产物不是预期的双架构 Mach-O（实际 ${macho.arches.join(' + ') || macho.arch}），降级为分架构打包`,
+        )
       }
     } else {
       note(`lipo 不可用或执行失败，降级为分架构打包：${(lipo.stderr || '').trim().split('\n')[0]}`)
@@ -557,7 +573,10 @@ async function main() {
     checks.push([`[${tag}] 主可执行文件有执行权限（0755）`, (stat.mode & 0o777) === 0o755, `0${(stat.mode & 0o777).toString(8)}`])
 
     const macho = readMachO(exePath)
-    const archOk = target.arches.every((arch) => macho.arches.includes(arch)) && macho.arches.length === target.arches.length
+    // 同样按架构族比较：目标 ['arm64','x64'] ↔ Mach-O ['arm64','x86_64']
+    const archOk =
+      target.arches.every((arch) => macho.archFamilies.includes(arch)) &&
+      macho.archFamilies.length === target.arches.length
     checks.push([`[${tag}] Mach-O 架构 = ${target.arches.join(' + ')}`, archOk, macho.arches.join(' + ')])
     checks.push([`[${tag}] SEA blob 已注入 NODE_SEA/__NODE_SEA_BLOB`, macho.seaBlobInjected])
     checks.push([`[${tag}] SEA fuse 已翻开（注入真的生效）`, hasEnabledSeaFuse(exePath)])

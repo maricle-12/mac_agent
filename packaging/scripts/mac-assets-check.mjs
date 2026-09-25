@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 
 import { generateMacIconAssets } from './icon.mjs'
 import { buildPlist, parsePlistTopLevel } from './plist.mjs'
-import { readMachO, hasEnabledSeaFuse, SEA_SEGMENT_NAME, SEA_RESOURCE_NAME } from './macho.mjs'
+import { readMachO, hasEnabledSeaFuse, archFamily, sameArch, ARCH_FAMILIES, SEA_SEGMENT_NAME, SEA_RESOURCE_NAME } from './macho.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const packagingDir = path.resolve(__dirname, '..')
@@ -195,18 +195,52 @@ function makeThinMachO({ cputype, includeSeaSection = true, fuseEnabled = true }
   return Buffer.concat([buffer, fuse])
 }
 
+// ---------------------------------------------------------------- C1. 架构名归一化
+//
+// 这一节的由来：macOS 构建在 CI 上失败于
+//     x64 二进制架构不符：实际 x86_64        （build-mac.mjs）
+// 根因是拿 Mach-O 头部的架构名（x86_64）去和 Node 分发包的架构名（x64）直接比较。
+// arm64 在两套命名里同名，所以只有 x64 会暴露。下面把映射关系本身断言下来。
+{
+  check('架构映射：arm64 族包含 arm64 / aarch64', archFamily('arm64') === 'arm64' && archFamily('aarch64') === 'arm64')
+  check(
+    '架构映射：x64 族包含 x64 / x86_64 / amd64',
+    archFamily('x64') === 'x64' && archFamily('x86_64') === 'x64' && archFamily('amd64') === 'x64',
+  )
+  check('架构映射：大小写与空白不敏感', archFamily(' X86_64 ') === 'x64' && archFamily('ARM64') === 'arm64')
+  check('架构映射：universal 不是单一架构族', archFamily('universal') === null)
+  check('架构映射：未知名字不会被猜成某个族', archFamily('mips') === null && archFamily(undefined) === null)
+
+  // 这正是当初失败的比较：Node 的 x64 ↔ Mach-O 的 x86_64
+  check('sameArch：x86_64 与 x64 视为同一架构（本次故障的那一对）', sameArch('x86_64', 'x64') === true)
+  check('sameArch：arm64 与 arm64 视为同一架构（arm64 之所以先通过）', sameArch('arm64', 'arm64') === true)
+  check('sameArch：aarch64 与 arm64 视为同一架构', sameArch('aarch64', 'arm64') === true)
+  check('sameArch：不同架构必须判为不同', sameArch('x86_64', 'arm64') === false && sameArch('x64', 'arm64') === false)
+  check('架构映射表声明了构建脚本用到的两个族', Boolean(ARCH_FAMILIES.arm64) && Boolean(ARCH_FAMILIES.x64))
+}
+
+// ---------------------------------------------------------------- C2. Mach-O 解析
+
 {
   const arm64Path = path.join(tempRoot, 'thin-arm64.bin')
   fs.writeFileSync(arm64Path, makeThinMachO({ cputype: 0x0100000c }))
   const arm64 = readMachO(arm64Path)
   check('thin Mach-O：识别为 arm64', arm64.format === 'thin' && arm64.arch === 'arm64', arm64.arch)
+  check('thin Mach-O（arm64）：架构族 = arm64，与 --arch=arm64 可比', arm64.archFamily === 'arm64', String(arm64.archFamily))
   check('thin Mach-O：识别出 NODE_SEA 段里的 __NODE_SEA_BLOB 分节', arm64.seaBlobInjected)
   check('thin Mach-O：识别出 fuse 已翻开', arm64.fuseEnabled)
 
   const x64Path = path.join(tempRoot, 'thin-x64.bin')
   fs.writeFileSync(x64Path, makeThinMachO({ cputype: 0x01000007, includeSeaSection: false, fuseEnabled: false }))
   const x64 = readMachO(x64Path)
-  check('thin Mach-O：识别为 x86_64', x64.arch === 'x86_64', x64.arch)
+  check('thin Mach-O：原始架构名是 x86_64（如实反映头部）', x64.arch === 'x86_64', x64.arch)
+  // 这一条就是 build-mac.mjs 里 x64 构建的断言现在依赖的等价形式
+  check(
+    'thin Mach-O（x86_64）：架构族 = x64，因此 --arch=x64 的断言能通过',
+    x64.archFamily === 'x64' && x64.archFamilies.length === 1 && x64.archFamilies[0] === 'x64',
+    x64.archFamilies.join(' + '),
+  )
+  check('thin Mach-O（x86_64）：sameArch 判定与 --arch=x64 一致', sameArch(x64.arch, 'x64') === true)
   check('未注入的二进制不会被误判为已注入', !x64.seaBlobInjected && !x64.fuseEnabled)
 
   // 合成 universal：fat 头 + 两个切片
@@ -229,7 +263,17 @@ function makeThinMachO({ cputype, includeSeaSection = true, fuseEnabled = true }
   fs.writeFileSync(fatPath, Buffer.concat([fatHeader, archA, archB, sliceA, sliceB]))
 
   const fat = readMachO(fatPath)
-  check('universal：识别为 fat 且同时含 arm64 + x64', fat.format === 'fat' && fat.arches.includes('arm64') && fat.arches.includes('x86_64'), fat.arches.join(' + '))
+  check(
+    'universal：原始架构名是 arm64 + x86_64',
+    fat.format === 'fat' && fat.arches.includes('arm64') && fat.arches.includes('x86_64'),
+    fat.arches.join(' + '),
+  )
+  // 通用包能否被认定为「双架构」，靠的就是这一条（直接 includes('x64') 会永远为假 → 静默降级）
+  check(
+    'universal：架构族 = [arm64, x64]，与 --arch=universal 的目标集合一致',
+    fat.archFamilies.length === 2 && fat.archFamilies.includes('arm64') && fat.archFamilies.includes('x64'),
+    fat.archFamilies.join(' + '),
+  )
   check('universal：两个切片都被判定为已注入 SEA', fat.seaBlobInjected)
   check('universal：fuse 已翻开', fat.fuseEnabled)
 }
