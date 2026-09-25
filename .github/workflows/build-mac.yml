@@ -1,0 +1,47 @@
+name: Build macOS App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    name: Build macOS DMG
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build macOS package
+        run: npm run build:mac
+
+      - name: Verify build output
+        run: |
+          ls -lah release
+          test -d release || exit 1
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-education-agent-macOS-build
+          path: |
+            release/*.dmg
+            release/*.app.zip
+          if-no-files-found: error
