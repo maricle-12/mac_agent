@@ -368,8 +368,7 @@ async function main() {
   // 只删中间产物，保留 node-cache（否则每换一个架构都要重新下载几十 MB 的 node 运行时）
   cleanOwnOutputs({
     targets: [
-      path.join(buildRoot, 'app'),
-      path.join(buildRoot, 'dmg-stage'),
+      path.join(buildRoot, 'dmg'),
       path.join(buildRoot, 'arm64'),
       path.join(buildRoot, 'x64'),
       path.join(buildRoot, 'universal-sea'),
@@ -460,8 +459,13 @@ async function main() {
 
   const built = []
   for (const target of targets) {
-    const appPath = path.join(buildRoot, 'app', target.key, MAC_APP_NAME)
+    // 应用包**直接**建在 DMG 卷内容根目录里，不再先建一份再拷贝：
+    //   ① 少一次 .app 整目录拷贝，没有「拷贝丢权限位」的风险；
+    //   ② 自检跑的 App 就是用户最终安装的那一份（同一个路径、同一批字节）。
+    const staging = path.join(buildRoot, 'dmg', target.key)
+    const appPath = path.join(staging, MAC_APP_NAME)
     const readmeText = buildMacReadme({ archLabel: target.label })
+    fs.mkdirSync(staging, { recursive: true })
     assembleAppBundle({
       appPath,
       executablePath: target.binary,
@@ -471,10 +475,6 @@ async function main() {
     })
     signAppBundle(appPath)
 
-    const staging = path.join(buildRoot, 'dmg-stage', target.key)
-    fs.rmSync(staging, { recursive: true, force: true })
-    fs.mkdirSync(staging, { recursive: true })
-    fs.cpSync(appPath, path.join(staging, MAC_APP_NAME), { recursive: true })
     // 「拖入应用程序」的落点：DMG 卷里必须有 /Applications 的符号链接
     fs.symlinkSync('/Applications', path.join(staging, 'Applications'))
     fs.writeFileSync(path.join(staging, '使用说明.txt'), readmeText, 'utf8')
@@ -558,10 +558,16 @@ async function main() {
         !fs.existsSync(path.join(target.appPath, MAC_BUNDLE_RESOURCE_SUBDIR, 'logs', 'app.log')),
     ])
     checks.push([
-      `[${tag}] DMG 暂存目录含应用包 + Applications 符号链接 + 使用说明`,
+      `[${tag}] DMG 卷内容含应用包 + Applications 符号链接 + 使用说明`,
       fs.existsSync(path.join(target.staging, MAC_APP_NAME)) &&
         fs.lstatSync(path.join(target.staging, 'Applications')).isSymbolicLink() &&
         fs.existsSync(path.join(target.staging, '使用说明.txt')),
+    ])
+    // 用户是从 DMG 里把 .app 拖进「应用程序」的，所以断言的是**这一份**的权限位，
+    // 而不是「我以为拷过去之后还是可执行的」。
+    checks.push([
+      `[${tag}] DMG 内应用包的主程序可执行（0755）`,
+      (fs.statSync(path.join(target.staging, MAC_APP_NAME, 'Contents', 'MacOS', MAC_EXECUTABLE_NAME)).mode & 0o777) === 0o755,
     ])
 
     const scan = scanRelease(target.appPath, {

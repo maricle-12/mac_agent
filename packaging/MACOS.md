@@ -103,14 +103,20 @@ npm run build:mac:cn
 
 ```
 release/
-├─ AI教育智能体_v1.0.1_macOS_universal.dmg      ← 交付给用户
+├─ AI教育智能体_v1.0.1_macOS_universal.dmg       ← 交付给用户（安装用）
+├─ AI教育智能体_v1.0.1_macOS_universal.app.zip   ← 应用包 zip（解压即得 .app）
 └─ （分开构建时：..._macOS_arm64.dmg / ..._macOS_x64.dmg）
 
 packaging/build-mac/                            ← 构建中间产物（已 gitignore）
 ├─ node-cache/                                  # 缓存的 Node 官方二进制（跨构建复用）
-├─ app/universal/AI教育智能体.app                # 已签名的应用包，可直接拖到 /Applications 本地试
-└─ dmg-stage/universal/                         # DMG 卷内容：.app + Applications 符号链接 + 使用说明.txt
+└─ dmg/universal/                               # DMG 卷内容，也是构建脚本自检的对象：
+   ├─ AI教育智能体.app                           #   已签名；可直接拖到 /Applications 本地试
+   ├─ Applications → /Applications              #   「拖入应用程序」的落点
+   └─ 使用说明.txt                                #   给用户先看的说明
 ```
+
+> 应用包**直接**建在 DMG 卷目录里，不再先建一份再拷贝 —— 这样既少一次整目录拷贝
+> （避免拷贝丢权限位），也让「自检跑的 App」与「用户安装的 App」是同一份字节。
 
 ---
 
