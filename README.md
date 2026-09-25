@@ -188,6 +188,46 @@ npm run dev
 | `npm run check:ui` | 无头浏览器 UI 自动化检查（需先启动 `npm run dev` 或 `npm run preview`） |
 | `npm run check:sse` | SSE 解析器单元验证（含逐字节切分等极端情况，无需网络） |
 | `npm run check:stream` | **真实流式链路验证**（需 `DEEPSEEK_API_KEY`，测量首字节与分块到达时间） |
+| `npm run check:paths` | **跨平台路径自检**（33 项，含把 macOS / Linux 的目录规则在本机算一遍并断言） |
+| `npm run check:mac-assets` | **macOS 打包资源自检**（23 项：ICNS、Info.plist、Mach-O 解析器，可在任意平台跑） |
+| `npm run build:win` | 构建 Windows 免安装版（`release/...zip`；等价于双击 `build_release.bat`） |
+| `npm run build:mac` | 构建 macOS 版 `.app` + `.dmg`（**只能在 macOS 上运行**；等价于双击 `build_release_mac.command`） |
+
+### 打包成免安装桌面软件（Windows / macOS）
+
+普通用户拿到的是**解压/挂载即用**的软件包，不需要安装 Node、Python、npm、conda：
+
+```bash
+# Windows：产出 release/AI教育智能体_v1.0.1_Windows.zip（解压后双击 启动智能体.exe）
+npm run build:win            # 或双击 build_release.bat
+
+# macOS：产出 release/AI教育智能体_v1.0.1_macOS_universal.dmg（拖进「应用程序」后点击启动）
+npm run build:mac            # 或双击 build_release_mac.command（需在 Mac 上）
+npm run build:mac:arm64      # 只出 Apple 芯片版
+npm run build:mac:x64        # 只出 Intel 版
+```
+
+**没有 Mac 电脑也可以构建 macOS 版**：仓库内置了 GitHub Actions（`.github/workflows/build-mac.yml`），
+用 GitHub 提供的 macOS Runner 在云端完成签名、出 dmg 与全套自检。
+
+```
+GitHub → Actions → Build macOS → Run workflow
+```
+
+构建完成后在该次运行页面的 **Artifacts** 里下载 `AI教育智能体-macOS-build`，
+内含 `.dmg`（安装用）与 `.app.zip`（应用包）。详见 [`packaging/MACOS.md`](packaging/MACOS.md)。
+
+两个平台的构建脚本都**自带断言与发行包自检**（在临时副本里真启动程序并打接口），
+任一环节失败即中断构建，不会产出「看起来成功但跑不起来」的包。
+
+- macOS 构建指南（含为什么「签名 + 出 dmg」必须在 Mac 上做）：[`packaging/MACOS.md`](packaging/MACOS.md)
+- 两个平台的完整测试方案与「已实测 / 未实测」声明：[`packaging/TESTING.md`](packaging/TESTING.md)
+
+> 说明：本产品**没有文件上传功能**（第一版明确不做上传 / 知识库 / RAG），
+> 两个平台的测试清单中该项均为 N/A。
+>
+> macOS 版未使用 Apple 开发者证书、未做公证，用户首次打开需要「右键 → 打开」。
+> 这是未签名软件的固有提示，应用内的「使用说明.txt」已写清处理方式。
 
 ### 自动化验证
 

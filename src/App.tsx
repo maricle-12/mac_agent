@@ -28,7 +28,13 @@ export default function App() {
   const [mode, setMode] = useState<AgentMode>(() => loadPreferences().mode)
   const store = useConversations(mode)
   const api = useApiSettings()
-  const chat = useChat({ store, mode, apiKey: api.apiKey, settings: api.settings })
+  const chat = useChat({
+    store,
+    mode,
+    apiKey: api.apiKey,
+    configured: api.configured,
+    settings: api.settings,
+  })
 
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -89,7 +95,7 @@ export default function App() {
   }
 
   const handleSaveSettings = (next: ApiSettings, nextApiKey: string) => {
-    api.save(next, nextApiKey)
+    return api.save(next, nextApiKey)
   }
 
   return (
@@ -152,6 +158,8 @@ export default function App() {
         open={settingsOpen}
         settings={api.settings}
         apiKey={api.apiKey}
+        maskedApiKey={api.maskedApiKey}
+        serverMode={api.serverMode}
         keyStorage={api.keyStorage}
         storageAvailable={store.storageAvailable}
         conversationCount={store.conversations.length}
@@ -186,7 +194,7 @@ export default function App() {
         cancelText="取消"
         danger
         onConfirm={() => {
-          api.clearAll()
+          void api.clearAll()
           setClearApiOpen(false)
         }}
         onCancel={() => setClearApiOpen(false)}

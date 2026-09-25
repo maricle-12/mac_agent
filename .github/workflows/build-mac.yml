@@ -1,0 +1,165 @@
+name: Build macOS
+
+# 在没有本地 Mac 的情况下，用 GitHub 的 macOS Runner 构建 macOS 版：
+#   AI教育智能体.app  →  AI教育智能体_v<版本>_macOS_universal.dmg  +  .app.zip
+#
+# 触发方式：
+#   1) 手动：GitHub → Actions → Build macOS → Run workflow（选 main 分支）
+#   2) 推送到 main 分支时自动构建
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+# 同一分支只保留最新一次运行，避免连续 push 时排队堆积
+concurrency:
+  group: build-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+# 只读代码即可完成构建与产物上传（不需要写仓库、不需要任何密钥）
+permissions:
+  contents: read
+
+jobs:
+  build-mac:
+    name: Build macOS .app + .dmg (Node SEA, ad-hoc signed)
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node 22 是硬性要求：本地数据库用的是 Node 内置的 node:sqlite（22.5+ 才有）
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          # 依赖分两处：项目根目录（vite/React 等）与 packaging/（esbuild/postject/resedit，仅构建期）
+          cache-dependency-path: |
+            package-lock.json
+            packaging/package-lock.json
+
+      # 把「Node SEA 兼容性 / codesign / hdiutil / lipo」这些问题所需的信息一次打印出来，
+      # 失败排查时不必再猜 runner 环境。
+      - name: Show runner environment
+        run: |
+          echo "runner arch : $(uname -m)"
+          echo "macOS       : $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+          echo "node        : $(node -v)"
+          echo "npm         : $(npm -v)"
+          echo "node arch   : $(node -p process.arch)"
+          echo "node exec   : $(node -p process.execPath)"
+          node -e "require('node:sqlite'); console.log('node:sqlite: OK')"
+          echo "gui session : $(launchctl managername 2>/dev/null || echo 'unknown')"
+          echo "xcode-select: $(xcode-select -p 2>&1 || true)"
+          for tool in /usr/bin/codesign /usr/bin/hdiutil /usr/bin/lipo /usr/bin/plutil /usr/bin/ditto; do
+            if [ -x "$tool" ]; then
+              echo "tool OK     : $tool"
+            else
+              echo "tool MISSING: $tool"
+            fi
+          done
+
+      - name: Install app dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "使用 npm ci（存在 package-lock.json）"
+            npm ci
+          else
+            echo "使用 npm install（没有 package-lock.json）"
+            npm install
+          fi
+
+      # packaging/ 是独立的构建期依赖集合（esbuild / postject / resedit），必须单独装。
+      # 不装也能跑起来（build 脚本会自己补），但那样无法用缓存、也不够可复现。
+      - name: Install packaging (build-time) dependencies
+        working-directory: packaging
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "使用 npm ci（存在 packaging/package-lock.json）"
+            npm ci
+          else
+            echo "使用 npm install（没有 packaging/package-lock.json）"
+            npm install
+          fi
+
+      # 这两项是跨平台自检，可以在真正构建前先把「目录规则 / 图标 / Info.plist / Mach-O 解析器」验掉。
+      # 早失败比在打包 5 分钟后才失败好排查。
+      - name: Cross-platform self-checks
+        run: |
+          npm run check:paths
+          npm run check:mac-assets
+
+      # 保持 Node SEA 架构不变：注入 → codesign ad-hoc 签名 → 组装 .app → 逐架构自检 → hdiutil 出 dmg → 挂载验收
+      - name: Build macOS .app and .dmg
+        run: npm run build:mac
+
+      - name: Verify build output
+        run: |
+          echo "::group::release 目录"
+          ls -lah release || true
+          echo "::endgroup::"
+          dmg_count=$(ls -1 release/*.dmg 2>/dev/null | wc -l | tr -d ' ')
+          zip_count=$(ls -1 release/*.zip 2>/dev/null | wc -l | tr -d ' ')
+          echo "dmg 数量：$dmg_count，zip 数量：$zip_count"
+          if [ "$dmg_count" -eq 0 ]; then
+            echo "::error::没有生成任何 .dmg —— 构建脚本没有产出交付物"
+            exit 1
+          fi
+          if [ "$zip_count" -eq 0 ]; then
+            echo "::warning::没有生成 .app 的 zip（dmg 已经可用于交付）"
+          fi
+
+      # 即使后面的步骤失败，也把已经产出的文件保留下来 —— 交付物不能因为一次校验失败就丢掉。
+      # 这里用 warn 而不是 error：真正「什么都没产出」的情况由上一个步骤明确报错，避免出现两条重复的失败信息。
+      - name: Upload macOS artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI教育智能体-macOS-build
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: warn
+          retention-days: 30
+
+      # 失败时把关键目录结构与运行日志打到本步骤的日志里，方便直接复制排查
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "::group::packaging/build-mac 目录结构（深度 4）"
+          find packaging/build-mac -maxdepth 4 2>/dev/null | head -200 || true
+          echo "::endgroup::"
+          echo "::group::应用日志 app.log"
+          find packaging/build-mac -name 'app.log' -print 2>/dev/null > /tmp/ai-edu-applogs.txt || true
+          if [ -s /tmp/ai-edu-applogs.txt ]; then
+            while IFS= read -r f; do
+              echo "--- $f"
+              tail -80 "$f" || true
+            done < /tmp/ai-edu-applogs.txt
+          else
+            echo "（没有找到 app.log）"
+          fi
+          echo "::endgroup::"
+          echo "::group::release 目录"
+          ls -lah release 2>/dev/null || echo "（release 目录不存在）"
+          echo "::endgroup::"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### macOS 构建结果"
+            echo ""
+            echo "- Runner：\`$(uname -m)\` / macOS $(sw_vers -productVersion)"
+            echo "- Node：\`$(node -v)\`"
+            echo ""
+            echo "产物（在本次运行的 Artifacts 中下载，名称：AI教育智能体-macOS-build）："
+            echo ""
+            echo '```'
+            ls -lh release 2>/dev/null || echo "（没有产物）"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

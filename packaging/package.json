@@ -1,0 +1,11 @@
+{
+  "name": "ai-edu-agent-packaging",
+  "private": true,
+  "version": "0.1.0",
+  "description": "仅构建期使用：把已运行的 demo 项目打包成 Windows 免安装便携版（esbuild 打包 + Node SEA 注入）",
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6",
+    "resedit": "^3.1.0"
+  }
+}

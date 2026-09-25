@@ -19,7 +19,10 @@ import { createConversationTitle } from '@/utils/title'
 export interface UseChatOptions {
   store: ConversationStore
   mode: AgentMode
+  /** 浏览器模式下保存的 Key；便携版恒为空字符串（Key 在本地服务里） */
   apiKey: string
+  /** 是否已配置可用的 API Key（便携版由本地服务告知） */
+  configured: boolean
   settings: ApiSettings
 }
 
@@ -42,7 +45,7 @@ export interface UseChatResult {
  * - AbortController 支持「停止生成」，同时通过 request.signal 传导到 Worker 与上游，停止计费；
  * - 空闲超时（streamIdleTimeoutMs）避免流挂死后一直显示「正在思考」。
  */
-export function useChat({ store, mode, apiKey, settings }: UseChatOptions): UseChatResult {
+export function useChat({ store, mode, apiKey, configured, settings }: UseChatOptions): UseChatResult {
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<ChatStatus>('idle')
   const abortRef = useRef<AbortController | null>(null)
@@ -66,7 +69,7 @@ export function useChat({ store, mode, apiKey, settings }: UseChatOptions): UseC
       appendMessage(conversationId, placeholder)
 
       // 未配置 Key 时不必发起请求，直接给出可操作提示
-      if (!apiKey.trim()) {
+      if (!configured) {
         updateMessage(conversationId, assistantId, {
           error: '尚未配置 API Key。请点击右上角「设置」填写你自己的 DeepSeek API Key。',
         })
@@ -189,7 +192,7 @@ export function useChat({ store, mode, apiKey, settings }: UseChatOptions): UseC
         if (abortRef.current === controller) abortRef.current = null
       }
     },
-    [apiKey, settings.baseUrl, settings.model, status, store],
+    [apiKey, configured, settings.baseUrl, settings.model, status, store],
   )
 
   const send = useCallback(

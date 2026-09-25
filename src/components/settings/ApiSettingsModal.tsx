@@ -11,7 +11,12 @@ import type { ApiKeyStorage, ApiSettings } from '@/types/settings'
 export interface ApiSettingsModalProps {
   open: boolean
   settings: ApiSettings
+  /** 浏览器模式下已保存的 Key；便携版恒为空字符串 */
   apiKey: string
+  /** 便携版：脱敏后的 Key（sk-****abcd） */
+  maskedApiKey: string
+  /** 是否运行在便携版本地服务中（Key 由本机保存） */
+  serverMode: boolean
   /** API Key 当前的存储位置，用于如实告知用户 */
   keyStorage: ApiKeyStorage
   /** 本机是否支持 IndexedDB（不支持时聊天记录只能留在内存） */
@@ -19,7 +24,8 @@ export interface ApiSettingsModalProps {
   /** 当前本地保存的对话数量 */
   conversationCount: number
   onClose: () => void
-  onSave: (settings: ApiSettings, apiKey: string) => void
+  /** 保存设置（便携版会先向本机服务验证 Key，失败时抛错且不保存） */
+  onSave: (settings: ApiSettings, apiKey: string) => Promise<void>
   /** 测试连接：用当前表单值发一次极小请求，返回结果供本弹窗展示 */
   onTest: (settings: ApiSettings, apiKey: string) => Promise<TestConnectionResult>
   onClearApiKey: () => void
@@ -43,12 +49,19 @@ const storageHint: Record<ApiKeyStorage, { dot: string; text: string; tone: stri
     text: '当前已保存在此设备上，下次打开无需重新输入。',
     tone: 'text-success',
   },
+  server: {
+    dot: 'bg-success',
+    text: '当前已保存在本机（不进入浏览器存储），下次打开无需重新输入。',
+    tone: 'text-success',
+  },
 }
 
 export function ApiSettingsModal({
   open,
   settings,
   apiKey,
+  maskedApiKey,
+  serverMode,
   keyStorage,
   storageAvailable,
   conversationCount,
@@ -63,6 +76,10 @@ export function ApiSettingsModal({
   const [showKey, setShowKey] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<TestConnectionResult | null>(null)
+  /** 便携版：已经配置过 Key 时先只展示脱敏值，点击「重新设置」才出现输入框 */
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   // 每次打开时用最新的外部设置重置表单
   useEffect(() => {
@@ -71,7 +88,9 @@ export function ApiSettingsModal({
     setKey(apiKey)
     setShowKey(false)
     setTestResult(null)
-  }, [open, settings, apiKey])
+    setEditing(!apiKey && !serverMode)
+    setSaveError(null)
+  }, [open, settings, apiKey, serverMode])
 
   // 表单被改动后，之前的测试结论不再可信
   useEffect(() => {
@@ -80,6 +99,9 @@ export function ApiSettingsModal({
 
   const provider = apiProviders.find((item) => item.id === form.provider) ?? apiProviders[0]
 
+  /** 便携版已配置且未点击「重新设置」时，输入框收起，直接用本机已保存的 Key */
+  const usingStoredKey = serverMode && !editing && keyStorage === 'server' && maskedApiKey.length > 0
+
   const normalizedForm = (): ApiSettings => ({
     ...form,
     baseUrl: form.baseUrl.trim().replace(/\/+$/, ''),
@@ -87,7 +109,7 @@ export function ApiSettingsModal({
   })
 
   const canTest =
-    key.trim().length > 0 &&
+    (key.trim().length > 0 || usingStoredKey) &&
     form.baseUrl.trim().length > 0 &&
     form.model.trim().length > 0 &&
     !testing
@@ -107,9 +129,18 @@ export function ApiSettingsModal({
     setForm((prev) => ({ ...prev, provider: next.id, baseUrl: next.baseUrl, model: next.model }))
   }
 
-  const handleSave = () => {
-    onSave(normalizedForm(), key.trim())
-    onClose()
+  const handleSave = async () => {
+    setSaving(true)
+    setSaveError(null)
+    try {
+      // 便携版会先向本机服务验证新 Key，验证失败会抛错且不保存
+      await onSave(normalizedForm(), key.trim())
+      onClose()
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '保存失败，请稍后重试。')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -121,7 +152,7 @@ export function ApiSettingsModal({
       panelClassName="sm:max-w-[520px]"
       footer={
         <>
-          {apiKey ? (
+          {apiKey || (serverMode && keyStorage === 'server' && maskedApiKey) ? (
             <Button
               variant="ghost"
               className="mr-auto text-danger hover:bg-danger/5"
@@ -133,8 +164,8 @@ export function ApiSettingsModal({
           <Button variant="ghost" onClick={onClose}>
             取消
           </Button>
-          <Button variant="primary" onClick={handleSave}>
-            保存
+          <Button variant="primary" disabled={saving} onClick={() => void handleSave()}>
+            {saving ? '保存中…' : '保存'}
           </Button>
         </>
       }
@@ -162,26 +193,39 @@ export function ApiSettingsModal({
           <label className={labelClass} htmlFor="api-key">
             API Key
           </label>
-          <div className="relative">
-            <input
-              id="api-key"
-              type={showKey ? 'text' : 'password'}
-              value={key}
-              onChange={(event) => setKey(event.target.value)}
-              placeholder="sk-xxxxxxxxxxxxxxxx"
-              autoComplete="off"
-              spellCheck={false}
-              className={`${inputClass} pr-10 font-mono`}
-            />
-            <button
-              type="button"
-              onClick={() => setShowKey((prev) => !prev)}
-              aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
-              className="absolute top-1/2 right-2 -translate-y-1/2 rounded-md p-1.5 text-ink-muted transition-colors hover:text-ink"
-            >
-              {showKey ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
-            </button>
-          </div>
+
+          {usingStoredKey ? (
+            // 便携版：不把完整 Key 填回输入框，只展示脱敏值
+            <div className="mt-1.5 flex items-center justify-between gap-3 rounded-lg border border-line bg-canvas/60 px-3 py-2">
+              <span className="font-mono text-sm text-ink" data-testid="masked-api-key">
+                {maskedApiKey}
+              </span>
+              <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+                重新设置
+              </Button>
+            </div>
+          ) : (
+            <div className="relative">
+              <input
+                id="api-key"
+                type={showKey ? 'text' : 'password'}
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+                placeholder="sk-xxxxxxxxxxxxxxxx"
+                autoComplete="off"
+                spellCheck={false}
+                className={`${inputClass} pr-10 font-mono`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((prev) => !prev)}
+                aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+                className="absolute top-1/2 right-2 -translate-y-1/2 rounded-md p-1.5 text-ink-muted transition-colors hover:text-ink"
+              >
+                {showKey ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+              </button>
+            </div>
+          )}
         </div>
 
         <div>
@@ -210,8 +254,8 @@ export function ApiSettingsModal({
             onChange={(event) => setForm((prev) => ({ ...prev, model: event.target.value }))}
             placeholder={apiConfig.defaultModel}
             spellCheck={false}
-            list="api-model-options"
             className={`${inputClass} font-mono text-[13px]`}
+            list="api-model-options"
           />
           <datalist id="api-model-options">
             {provider.models.map((model) => (
@@ -220,29 +264,39 @@ export function ApiSettingsModal({
           </datalist>
         </div>
 
-        <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-canvas/60 p-3">
-          <input
-            type="checkbox"
-            checked={form.rememberApiKey}
-            onChange={(event) =>
-              setForm((prev) => ({ ...prev, rememberApiKey: event.target.checked }))
-            }
-            className="mt-0.5 size-4 accent-brand"
-          />
-          <span>
-            <span className="block text-[13px] font-medium text-ink">在此设备记住 API Key</span>
+        {serverMode ? (
+          <div className="rounded-lg border border-line bg-canvas/60 p-3">
+            <span className="block text-[13px] font-medium text-ink">API Key 保存在本机</span>
             <span className="mt-0.5 block text-[12px] leading-5 text-ink-soft">
-              不勾选时，API Key 仅保存在当前会话（sessionStorage），关闭浏览器后自动失效。
-              勾选后才会保存到本机浏览器（localStorage），方便下次打开无需重新输入。
+              便携版的 API Key 由本机服务保存（config/settings.json），
+              不会写入浏览器存储，也不会回传网页；浏览器只能看到脱敏后的 sk-****abcd。
             </span>
-          </span>
-        </label>
+          </div>
+        ) : (
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-canvas/60 p-3">
+            <input
+              type="checkbox"
+              checked={form.rememberApiKey}
+              onChange={(event) =>
+                setForm((prev) => ({ ...prev, rememberApiKey: event.target.checked }))
+              }
+              className="mt-0.5 size-4 accent-brand"
+            />
+            <span>
+              <span className="block text-[13px] font-medium text-ink">在此设备记住 API Key</span>
+              <span className="mt-0.5 block text-[12px] leading-5 text-ink-soft">
+                不勾选时，API Key 仅保存在当前会话（sessionStorage），关闭浏览器后自动失效。
+                勾选后才会保存到本机浏览器（localStorage），方便下次打开无需重新输入。
+              </span>
+            </span>
+          </label>
+        )}
 
         <div className="flex items-start gap-2 rounded-lg bg-brand-soft p-3 text-[12px] leading-5 text-ink-soft">
           <InfoIcon className="mt-px size-4 shrink-0 text-brand" />
           <p>
             API Key 仅用于调用您选择的模型服务。本应用不会将 API Key 保存到云端数据库，
-            也不会写入源码或日志。所有聊天记录只保存在你自己的浏览器中。
+            也不会写入源码或日志。所有聊天记录只保存在你自己的电脑上。
           </p>
         </div>
 
@@ -251,13 +305,22 @@ export function ApiSettingsModal({
           <span className={storageHint[keyStorage].tone}>{storageHint[keyStorage].text}</span>
         </p>
 
+        {saveError ? (
+          <p
+            className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] leading-5 text-danger"
+            data-testid="settings-save-error"
+          >
+            {saveError}
+          </p>
+        ) : null}
+
         <div className="border-t border-line-soft pt-3">
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="secondary" size="sm" disabled={!canTest} onClick={() => void handleTest()}>
               {testing ? '测试中…' : '测试连接'}
             </Button>
 
-            {!key.trim() ? (
+            {!key.trim() && !usingStoredKey ? (
               <span className="text-[12px] text-ink-muted">请先填写 API Key</span>
             ) : null}
 
@@ -297,7 +360,7 @@ export function ApiSettingsModal({
           {testResult && !testResult.ok ? (
             <p className="mt-2 text-[12px] leading-5 text-ink-muted">
               常见原因：API Key 填错或已失效、账户余额不足、模型名称不存在、Base URL 填错、
-              网络无法访问模型服务，或 Worker 未启动。
+              网络无法访问模型服务，或本地服务未启动。
             </p>
           ) : null}
         </div>
@@ -305,7 +368,9 @@ export function ApiSettingsModal({
         <div className="border-t border-line-soft pt-4">
           <h3 className="text-[13px] font-medium text-ink">本地数据</h3>
           <p className="mt-1 text-[12px] leading-5 text-ink-soft">
-            聊天记录只保存在你自己的浏览器中（IndexedDB），不会上传到任何服务器。
+            {serverMode
+              ? '聊天记录保存在你自己的电脑上（本机数据库），不会上传到任何服务器。'
+              : '聊天记录只保存在你自己的浏览器中（IndexedDB），不会上传到任何服务器。'}
             当前共 {conversationCount} 个对话。
           </p>
 

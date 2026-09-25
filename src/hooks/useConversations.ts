@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import {
-  clearConversations as clearStoredConversations,
-  deleteConversation as deleteStoredConversation,
-  isIndexedDbAvailable,
-  listConversations,
-  putConversation,
-  requestPersistentStorage,
-} from '@/db/indexedDb'
+import { conversationRepository, currentRepository } from '@/db/repository'
+import { isIndexedDbAvailable, requestPersistentStorage } from '@/db/indexedDb'
 import { loadPreferences, savePreferences } from '@/services/storage'
 import type { ChatMessage } from '@/types/chat'
 import type { AgentMode, Conversation } from '@/types/conversation'
@@ -45,10 +39,14 @@ function sortByUpdatedAt(list: Conversation[]): Conversation[] {
 }
 
 /**
- * 会话状态与增删改，数据持久化在浏览器 IndexedDB。
+ * 会话状态与增删改。
  *
- * 存储策略：
- * - 所有改动先更新 React 状态（界面即时响应），再按会话节流写入 IndexedDB；
+ * 存储策略（v1.0.1 起）：
+ * - 便携版（Windows 免安装版 / macOS 应用包）：持久化在本地 Node 服务的 SQLite（data/app.db），与浏览器端口无关；
+ * - 网页部署版：持久化在浏览器 IndexedDB（行为与之前一致）。
+ *
+ * 无论哪种模式：
+ * - 所有改动先更新 React 状态（界面即时响应），再按会话节流写入存储；
  * - 删除与新建立即落库，避免「刚建好就刷新」导致丢失；
  * - 页面隐藏时把待写入的内容立刻落库（尽力而为）。
  *
@@ -58,7 +56,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
-  const storageAvailable = useMemo(() => isIndexedDbAvailable(), [])
+  const [storageAvailable, setStorageAvailable] = useState(() => isIndexedDbAvailable())
 
   /** 已经安排写入的最新快照 */
   const pendingRef = useRef(new Map<string, Conversation>())
@@ -73,14 +71,20 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
     let cancelled = false
 
     void (async () => {
-      // 申请持久化存储，降低聊天记录被浏览器回收的概率（失败也无妨）
-      void requestPersistentStorage()
+      // 先确定数据来源：本地服务（SQLite）还是浏览器 IndexedDB，
+      // 便携版会在这里顺带完成一次性的旧数据迁移。
+      const repository = await conversationRepository()
+      if (cancelled) return
 
-      const loaded = sortByUpdatedAt(await listConversations())
+      // 只有浏览器存储模式才需要申请持久化存储权限
+      if (repository.kind === 'indexeddb') void requestPersistentStorage()
+
+      const loaded = sortByUpdatedAt(await repository.listConversations())
       if (cancelled) return
 
       for (const conversation of loaded) pendingRef.current.set(conversation.id, conversation)
       setConversations(loaded)
+      setStorageAvailable(repository.available)
 
       const preferred = loadPreferences().activeConversationId
       const preferredExists = preferred ? loaded.some((item) => item.id === preferred) : false
@@ -104,7 +108,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
   const flush = useCallback((id: string) => {
     const snapshot = pendingRef.current.get(id)
     if (!snapshot) return
-    void putConversation(snapshot)
+    void currentRepository().putConversation(snapshot)
   }, [])
 
   const cancelPending = useCallback((id: string) => {
@@ -190,7 +194,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
       }
       pendingRef.current.set(conversation.id, conversation)
       // 新建立即落库：避免刚建好就刷新导致丢失
-      void putConversation(conversation)
+      void currentRepository().putConversation(conversation)
       setConversations((prev) => sortByUpdatedAt([conversation, ...prev]))
       setActiveId(conversation.id)
       return conversation.id
@@ -221,7 +225,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
   const remove = useCallback(
     (id: string) => {
       cancelPending(id)
-      void deleteStoredConversation(id)
+      void currentRepository().deleteConversation(id)
 
       // 删除当前会话时自动选中相邻会话（优先下一条，其次上一条），
       // 避免用户删完当前会话后被丢进空白页。
@@ -239,7 +243,7 @@ export function useConversations(initialMode: AgentMode = 'teacher'): Conversati
 
   const clearAll = useCallback(() => {
     for (const id of [...pendingRef.current.keys()]) cancelPending(id)
-    void clearStoredConversations()
+    void currentRepository().clearConversations()
     setConversations([])
     setActiveId(null)
   }, [cancelPending])

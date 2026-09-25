@@ -1,0 +1,43 @@
+# 统一换行符与二进制标记。
+#
+# 为什么这个仓库需要显式声明：
+#   - build_release_mac.command 在 macOS 上会被 Finder 直接执行。如果它以 CRLF 检出，
+#     shebang 会变成 "#!/bin/bash\r"，macOS 会报 bad interpreter 而无法运行。
+#   - .github/workflows/*.yml 里的 run: 脚本块同样会被 bash 执行。
+#   - build_release.bat 是 Windows 批处理，保持 CRLF 最稳妥。
+# 显式写清楚，就不依赖每个贡献者本机的 core.autocrlf 设置。
+
+* text=auto eol=lf
+
+# Windows 批处理保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# POSIX 脚本与 CI 配置强制 LF
+*.command text eol=lf
+*.sh text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# 二进制：不要做任何换行转换，也不要尝试文本合并
+*.exe binary
+*.dll binary
+*.ico binary
+*.icns binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.dmg binary
+*.db binary
+
+# 锁文件交给工具生成/更新，不参与 diff 展示
+package-lock.json -diff linguist-generated

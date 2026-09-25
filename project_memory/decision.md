@@ -304,3 +304,324 @@ Decision: `ui-check.mjs` 增加「探测转发端点是否已配置」用例；�
 Reason: 生产构建在阶段 14 之前不可能有可用的 Worker 地址，把这些用例报成 FAIL 会掩盖真实问题，也让「全绿」失去意义。
 
 Impact: 新增依赖外部服务的用例时，必须同时给出可判定的跳过条件与清晰的跳过原因。
+
+## 便携版用 Node SEA 打包，不用 PyInstaller
+
+Decision: Windows 免安装版的运行时选 Node SEA（`node.exe` + 注入 SEA blob + 改 PE 子系统为 GUI），
+而不是「用 PyInstaller 打一个 Python 启动器」。
+
+Reason: 本项目**根本没有 Python 后端** —— 后端是 `worker/src/index.ts`（Web Fetch API 风格的无状态转发）。
+要套 PyInstaller 就必须用 Python 重写一遍转发、校验、CORS、SSRF 白名单与流式透传，
+既违反「不重写现有功能」，也会让已经通过的 38 项 Worker 自检失去意义。
+Node SEA 可以把「原封不动的 Worker 代码」跑在随包分发的 Node 运行时上，逻辑零分叉。
+
+Impact: 构建期需要 Node（仅开发机）；发行包内 `启动智能体.exe` 自带运行时，用户机器不需要 Node。
+以后换后端技术栈时，这个决策要重新评估。
+
+## 用「Node http ↔ Fetch API 适配层」复用 Worker，而不是改造 Worker
+
+Decision: 新增 `packaging/src/local-server.cjs`，把 Node 的 `IncomingMessage` 转成 `Request`、
+把 `Response` 流式写回 `ServerResponse`，再交给 `worker.fetch(request, { ALLOWED_ORIGINS })`。
+`worker/src/**` 一个字符都不改。
+
+Reason: 同一份代码要同时服务两种部署形态（Cloudflare Worker / 本地便携版）。
+适配层属于「启动器基础设施」，不是业务逻辑；把 Worker 改成同时兼容两者会污染安全边界（CORS、SSRF 白名单）。
+
+Impact: 本地版天然继承 Worker 的全部安全行为（origin 白名单、512 KB 上限、Base URL 白名单、Key 脱敏）。
+新增 `/api/local/info` 与 `/api/local/shutdown` 两个**启动器专属**接口时，也必须放在适配层，不放进 Worker。
+
+## 端口必须可记忆，否则聊天记录会「看起来丢了」
+
+Decision: 默认 8765，被占用则依次探测；成功端口写入 `config/port.txt`，下次启动优先复用。
+
+Reason: 聊天记录与 API Key 存在浏览器里，而浏览器存储按 **origin（含端口）** 隔离。
+如果每次启动都换端口，用户会以为历史记录丢失 —— 这是便携版最容易踩的坑。
+
+Impact: 端口冲突后切到新端口的那一次，浏览器里确实是「空的历史」（origin 变了）。
+要彻底消除只能改成服务端存储或固定 origin，属于产品级改动，不要顺手做。
+
+## 发行版必须是 GUI 子系统（不出现控制台窗口）
+
+Decision: SEA 注入后把 PE `OptionalHeader.Subsystem` 由 3（CONSOLE）改成 2（GUI）；
+启动器自己接管日志（写 `logs/app.log`），启动失败时弹 Windows 对话框并指向日志文件。
+
+Reason: 普通用户双击 exe 弹出黑色命令行窗口是「开发工具」的观感，不符合「软件产品」要求；
+同时要求「不能静默失败」，所以必须有对话框兜底。
+
+Impact: GUI 子系统下 `process.stdout/stderr` 无效，启动器启动时先替换 `console`（`AI_EDU_DEBUG=1` 可恢复输出）。
+以后往启动器里加代码时不要依赖 `console.log` 做用户可见输出 —— 一律走 logger。
+
+## 构建期依赖与运行期依赖严格分离
+
+Decision: `packaging/package.json` 只放 esbuild 与 postject（构建期）；发行包里不含它们，
+也不含 `node_modules`、`.env.*` 与源码。版本号以 `package.json` 为唯一来源，构建时校验
+`src/config/app.ts` 的 `appConfig.version` 与之一致。
+
+Reason: 「伪打包成功」最常见的原因是发行包偷偷依赖开发机的工具链或路径。
+构建脚本里显式断言：启动器不含开发机绝对路径、前端不含 `workers.dev`、包内不含 API Key、
+exe 为 GUI 子系统、版本号三处一致。
+
+Impact: 新增构建期工具放进 `packaging/package.json`；新增发行期资源放进 `resources/`，
+并在 `build-release.mjs` 的检查清单里补一条断言。
+
+## 聊天历史改用本机 SQLite，浏览器不再是数据源
+
+Decision: 便携版的聊天历史存在 `data/app.db`（SQLite），前端通过 `/api/local/conversations`
+读写；浏览器 IndexedDB 只在一次性迁移时被读取一次，之后不再参与正式数据。
+
+Reason: v1.0.0 把历史放在 IndexedDB，而浏览器存储按 **origin（含端口）** 隔离 ——
+端口从 8765 变成 8766 时用户会看到「历史记录空了」，这是普通用户无法理解的缺陷。
+数据放到本机文件后，历史与端口、浏览器、清缓存全部解耦。
+
+Impact: 便携版的「正式聊天数据」只有一份真实来源（SQLite）。任何新增的会话/消息字段都要同时
+改 SQLite 表结构与前端类型；不要再往 IndexedDB 里写正式数据（它只保留 UI 偏好与迁移暂存）。
+
+## 用 Node 内置 `node:sqlite`，不引入任何 SQLite native 模块
+
+Decision: 数据库用 Node 22.5+ 内置的 `node:sqlite`（`DatabaseSync`），不装 better-sqlite3 / sql.js。
+
+Reason: native 模块（`.node`）在 Node SEA 里需要额外的二进制收集与路径处理，是「伪打包成功」
+的高发区；WASM 方案则要每次落盘整个数据库。`node:sqlite` 编译在 node.exe 内，
+**已实测在 SEA 打包后可直接读写 `data/app.db`**，零依赖、零打包风险。
+
+Impact: 不要为了 ORM 或花哨 API 换成 native 驱动；数据库结构变更走 `meta.schema_version`
+的增量迁移，不做破坏性重建。非 WAL 模式（保持单文件，便于用户直接备份 app.db）。
+
+## API Key 移出浏览器，改由本机服务保存并在转发时注入
+
+Decision: Key 存在 `config/settings.json`；浏览器只能通过 `GET /api/local/settings` 拿到
+`{ configured, maskedApiKey }`；`/api/chat` 在适配层补齐 apiKey / baseUrl / model 后再交给未改动的 Worker。
+
+Reason: 减少前端暴露面（不写进 bundle / localStorage / 日志），同时保持 Worker 的校验、
+CORS、SSRF 白名单、流式透传逻辑一字不改。
+
+Impact: 浏览器端不得再出现完整 Key —— 设置弹窗只显示 `sk-****abcd` + 「重新设置」；
+保存新 Key 时服务端先用真实请求验证，验证不过就不保存（避免存下坏 Key）。
+未来若加 DPAPI 加密，只改 `packaging/src/settings.cjs`，不要动接口形状。
+
+## 旧数据只迁移、不删除，且只做一次
+
+Decision: 首次启动若本机数据库为空且浏览器里有旧 IndexedDB 历史，则导入 SQLite；
+成功后把 `indexeddb_migration_v1` 写进数据库 meta 表；**无论如何都不删除浏览器里的旧数据**，
+迁移失败也不影响应用启动。
+
+Reason: 用户的历史记录不能因为一次升级而丢失或产生重复；升级过程必须可重入、可回退。
+
+Impact: 迁移逻辑必须保持「只在数据库为空时导入」「失败不写完成标记」「不清理 IndexedDB」三条。
+
+## EXE 必须有产品图标与版本资源，但不虚构公司信息
+
+Decision: 用 `packaging/scripts/icon.mjs`（纯 JS 光栅化 favicon.svg + 自写 PNG/ICO 编码）
+生成 16/24/32/48/64/128/256 七种尺寸的 `app.ico`；用 resedit 写入 RT_ICON 与 RT_VERSION。
+CompanyName 与 LegalCopyright 留空。
+
+Reason: 普通用户软件的「属性 → 详细信息」不能是空的；项目里没有正式公司名与版权声明，
+按需求不杜撰。图标从既有品牌素材生成，不重新设计品牌。
+
+Impact: 换品牌图形只需改 `public/favicon.svg` 与 `icon.mjs` 里的常量；
+版本号统一以 `package.json` 为准，构建时校验 `src/config/app.ts` 与 EXE 版本资源一致。
+
+## ui-check 必须感知「便携版 / 网页版」两种存储模式
+
+Decision: `scripts/ui-check.mjs` 增加 `detectLocalMode()`，对与存储相关的 6 个用例分支处理：
+便携版验证「Key 不在浏览器任何存储里」，网页版保持原有 sessionStorage / localStorage 断言；
+读取持久化结果的 `DB_DUMP_EXPR` 也按模式改走 `/api/local/conversations`。
+
+Reason: 同一套 UI 现在有两种数据来源，若测试只认 IndexedDB，便携版会被误报为失败，
+「全绿」也就失去意义。
+
+Impact: 以后新增与存储相关的 UI 用例，必须先判断模式，两种模式都要给出可判定的断言。
+
+## macOS 继续用 Node SEA，不引入 Electron / Tauri / PyInstaller
+
+Decision: macOS 版继续复用现有的 Node SEA 打包线（`node` 官方 darwin 二进制 + 注入同一份
+平台无关的 SEA blob），只把可执行文件从 PE 换成 Mach-O、把交付物从 ZIP 换成 `.app` + `.dmg`。
+不把项目改写成 Electron / Tauri，也不用 PyInstaller。
+
+Reason: 本项目**根本没有 Python 后端、也没有第二份 UI**：后端是 `worker/src/index.ts`（Fetch API 风格），
+前端是已经构建好的静态资源，启动器已经写好了单实例、端口探测、健康检查、打开浏览器、
+本机 SQLite、Key 服务端化。改成 Electron 等于把「启动器 + 本地服务」重写一遍，
+并把 87.8 MB 的发行包换成 150 MB+ 的 Chromium，同时让已有的三套自动化检查（Worker 38 项、
+ui-check 27 项、便携版自检 25 项）全部失去对应的被测对象。SEA 路线的逻辑分叉为零。
+
+Impact: 平台差异被限制在三处 —— `packaging/src/paths.cjs`（目录规则）、
+`packaging/src/win.cjs` / `mac.cjs` + `platform.cjs`（系统集成）、两个构建脚本的
+「可执行文件生成 + 交付格式」。新增平台时照这个形状再加一份实现，不要动 `worker/` 与 `src/`。
+
+## macOS 打包的最后几步只能在 Mac 上做（工具链限制，不是实现取舍）
+
+Decision: `npm run build:mac` 只在 macOS 上运行；Windows 侧不做「交叉出一个 dmg」的尝试。
+把「平台无关的步骤」全部前置到任意机器都能跑，并在 Windows 上为 macOS 规则写自检脚本。
+
+Reason: 两条硬约束 ——
+① SEA 注入必然使原签名失效，而 **Apple 芯片要求所有二进制都有有效签名**，
+   必须用 `/usr/bin/codesign` 重做 ad-hoc 签名；
+② `.dmg` 是 Apple 的 UDIF 格式，只有 `/usr/bin/hdiutil` 能生成正式可挂载的压缩镜像。
+这两者都不是靠写 JavaScript 能绕过的。相反，`postject` 的 Mach-O 注入、图标、Info.plist、
+目录规则、blob 生成都是平台无关的，可以在 Windows 上先验一遍。
+
+Impact: 以后不要在 Windows 上追求「生成 dmg」（例如引入 libdmg-hfsplus 或第三方 dmg 库）——
+产出的镜像行为与 `hdiutil` 不一致，且仍然过不了 codesign 那一关。
+需要交付 macOS 包时，在一台 Mac（或云 Mac）上跑 `npm run build:mac` 即可，
+依赖与步骤见 `packaging/MACOS.md`。
+
+## macOS 用户数据放 Application Support，不写进应用包
+
+Decision: macOS 上聊天数据库、配置、日志放在 `~/Library/Application Support/AI教育智能体/`；
+前端资源仍然从应用包内读取。为此在 `paths.cjs` 中把「资源根目录」与「数据根目录」彻底分开，
+并且 macOS 分支**即使应用包目录可写也不把数据写进包内**。
+
+Reason: 三条都是硬伤 —— 写入应用包内部会破坏代码签名（Gatekeeper 与 `codesign --verify` 都会失败）；
+macOS 的既定约定就是用户数据放 Application Support；用户直接从 dmg 里运行时会被 App Translocation
+挂载到只读随机路径，写在包内的数据每次启动看起来都「消失了」。
+Windows 版不受影响：那里的「数据与程序同目录」是可移植性的真实收益（拷走文件夹即带走数据）。
+
+Impact: 两个平台的**存储行为**必须一致（同一份 SQLite、同一套 `/api/local/*`、Key 一样不出浏览器），
+只有目录位置不同；不要把 macOS 也做成「数据在包内」来追求形式上的统一。
+`dataModeLabel` 用于在日志里如实说明当前数据放在哪、为什么。
+
+## macOS 应用采用 LSUIElement（后台型），不用 Dock 图标
+
+Decision: `Info.plist` 设 `LSUIElement = true`：应用不出现在 Dock、没有菜单栏；
+退出走网页里「关于 → 退出智能体」。
+
+Reason: 与 Windows 版的体验对齐 —— Windows 那边是 GUI 子系统的 exe，双击后不出现窗口、
+不出现托盘图标，只有浏览器界面。另外，非 Cocoa 进程收不到 Dock 发出的 Apple 事件（Quit），
+`Cmd+Q` 会表现为「没反应」甚至被系统判定为无响应，给 Dock 图标只会带来误导。
+
+Impact: 说明文本里必须写清「如何彻底关闭」。不要为了「让用户能在 Dock 里看到它」而改回前台应用。
+
+## 采用 ad-hoc 签名 + 明确告知，不追求 Apple 公证
+
+Decision: 用 `codesign --force --sign -` 做 ad-hoc 签名；不做 hardened runtime、不做公证（notarize）；
+在应用内 `使用说明.txt` 与 `packaging/MACOS.md` 用中文写清「首次打开需要 右键 → 打开」，
+以及出现「已损坏」时的 `xattr -dr com.apple.quarantine` 处理方式。
+
+Reason: 没有 Apple Developer Program 会员资格（99 美元/年）就拿不到 Developer ID 证书，
+公证无法进行。ad-hoc 是这种情况下唯一可用的签名方式，且**必须做**——
+否则 Apple 芯片会直接杀掉进程。Hardened Runtime 反而会要求为 V8 配置
+`allow-jit` 等 entitlements，在没有证书的前提下只增加启动失败风险。
+
+Impact: 不要把「未签名/未公证」包装成「已解决」；也不要为了绕开 Gatekeeper 而尝试
+`--no-quarantine`、修改系统设置之类的做法。若将来拿到证书，只需在 `build-mac.mjs` 的
+签名步骤换成真实身份 + `notarytool`，其余流程不变。
+
+## 路径计算与路径落地分离，让 macOS 规则可以在 Windows 上验证
+
+Decision: `paths.cjs` 暴露 `planRoots({ platform, execPath, env, homeDir, writable, sea })`
+做**纯计算**（不建目录、不写文件），`resolveRoots()` 在此基础上真正创建目录。
+构建脚本里的 `paths-check.mjs` 用 `platform: 'darwin'` 把 macOS / Linux 的规则算一遍并断言。
+
+Reason: 之前那次改动就踩过坑 ——「应用包内在 `Contents/MacOS`」被误判成需要再向上一级，
+把资源根算成了 `Contents/MacOS`。这种错误在 Windows 上不可能通过「运行一下」发现，
+但用纯函数 + 显式平台参数就能立刻暴露（实测该自检当场抓出了这个 bug）。
+
+Impact: 以后新增平台或改目录规则，先在 `planRoots` 里实现并补 `paths-check.mjs` 的断言，
+再去改构建脚本。`path.win32` / `path.posix` 必须按目标平台选择，不要用宿主机默认的 `path`。
+
+## 启动器支持 `--port` / `--no-browser` / `--data-root`（命令行优先于环境变量）
+
+Decision: 启动器扫描 argv 中形如 `--name` / `--name=value` 的项，优先级高于同名环境变量；
+扫描方式不依赖 argv 的布局（原生 Mach-O 与 Node SEA 的 argv 长度不同）。
+
+Reason: macOS 上要验证「用户双击启动」必须走 `/usr/bin/open`（LaunchServices），
+而 `open` 对环境变量的转发不可靠，只能用 `--args` 传命令行参数。
+同时这也给技术支持提供了一个「换个端口启动」的手段。
+
+Impact: 普通用户双击时不带任何参数，行为与之前完全一致（这条必须保持）。
+新增开关时同时支持同名环境变量，便于自动化脚本两种方式都能用。
+
+## 平台无关的构建步骤只写一遍（packaging/scripts/lib/common.mjs）
+
+Decision: 前端构建、Worker 打包、启动器打包、SEA blob 生成、版本一致性校验、安全扫描、
+用户说明文本、命名常量全部放进 `packaging/scripts/lib/common.mjs`；
+`build-release.mjs`（Windows）与 `build-mac.mjs`（macOS）只在「可执行文件生成 + 交付格式」上分叉。
+
+Reason: 两套构建脚本各写一遍，最容易出现的是「改了 Windows 忘了改 macOS」：
+版本号、安全扫描规则、说明文本、ZIP/ DMG 命名都会悄悄漂移。
+共用一份还有个额外好处：`npm run build:win` 会顺带证明共用部分仍然可用。
+
+Impact: 新增打包步骤时先判断它是否平台相关；平台无关的一律加到 `lib/common.mjs`。
+两个构建脚本的步骤编号（`1/10` … `10/10`）保持对称，便于对照阅读。
+
+## 构建只清理本平台自己的产物
+
+Decision: Windows 构建删除 `release/AI教育智能体/` 与旧的 `*_Windows.zip`；
+macOS 构建删除 `packaging/build-mac/` 的中间产物与旧的 `*_macOS*.dmg`。
+两者都**不再** `rm -rf release/`。
+
+Reason: 两个平台的交付物要能同时存在于 `release/`；构建 Windows 版不应该把已经做好的 `.dmg` 删掉。
+另一点：`packaging/build-mac/node-cache/` 缓存的 Node 官方二进制要保留，
+否则每换一个架构都要重新下载几十 MB。
+
+Impact: 新增交付格式时，清理逻辑要精确到自己的文件名/目录，不要图省事清整个 `release/`。
+
+## 通用包（universal）优先，失败自动降级为分架构 DMG
+
+Decision: `--arch` 默认 `universal`：分别生成 arm64 与 x64 两份二进制并各自验证，
+再用 `/usr/bin/lipo -create` 合成一个 `.app`，产出**一个** `.dmg`。
+若 lipo 不可用或合成结果不是预期的双架构 Mach-O，则**自动降级**为分别输出
+`..._macOS_arm64.dmg` 与 `..._macOS_x64.dmg`，并在输出与使用说明里说明。
+
+Reason: 一个文件最省事（用户不必知道自己是 Intel 还是 Apple 芯片）；但
+Node 官方 CI 对 macOS 的 SEA **只覆盖 arm64，x64 未被上游测试**，
+所以不能假设「合并就一定行」——必须每步可判定，并在不行时给出可用的替代产物，
+而不是产出一个「看起来成功但跑不起来」的包。
+
+Impact: 任何关于架构的处理都不要跳过「逐架构真启动一次并打接口」这一步。
+新增架构（例如未来的其他平台）时沿用同一形状：逐架构验证 → 合成 → 合成物再验证 → 不行就降级。
+
+## 用 GitHub Actions 的 macOS Runner 代替本地 Mac
+
+Decision: 在仓库里提供 `.github/workflows/build-mac.yml`（`runs-on: macos-latest`），
+把原本「必须在 Mac 上做」的最后几步（ad-hoc 签名、出 dmg、真机验收）放到 GitHub 的 macOS Runner 上执行；
+本地 Mac 构建能力（`npm run build:mac`）保留不变，两条路径共用同一份 `build-mac.mjs`。
+
+Reason: 「必须 macOS」是工具链限制（`codesign` / `hdiutil`），不是「必须是你自己的 Mac」。
+GitHub 的 `macos-latest` 就是 Apple 芯片的 macOS 机器，同时自带 Node 与全部系统工具，
+正好把这条限制消掉；而且 CI 里跑的是同一份脚本、同一套断言，不存在「CI 版本和本地版本行为不一致」。
+
+Impact: 以后 macOS 侧的任何改动都要保证「在 CI 上能跑通」，不能只在本地 Mac 上验证。
+工作流里不引入 Apple Developer 账号与任何 Secret（只用 ad-hoc 签名），保持零成本与零凭证。
+
+## CI 不能上传裸 .app，只能上传 .dmg / .zip
+
+Decision: GitHub Actions 的 artifact 只上传 `release/*.dmg` 与 `release/*.zip`；
+`.app.zip` 用 `/usr/bin/ditto -c -k --sequesterRsrc --keepParent` 生成，**绝不用 `zip` 命令**，
+且构建脚本会把 zip 解压回临时目录复验 `codesign --verify --deep --strict`。
+
+Reason: `upload-artifact` **不保留文件权限位**（官方文档明确说明），
+裸 `.app` 目录经 artifact 中转后 Main executable 会丢掉可执行权限，用户解压后打不开；
+而 `.dmg` / `.zip` 把权限与签名封在归档内部，用户解压/挂载后完全正常。
+`zip` 命令会破坏 `.app` 的符号链接与扩展属性，只有 `ditto` 是 macOS 上正确的应用包打包方式。
+
+Impact: 不要为了「让用户直接拿到 .app」而改成上传目录；新增任何交付格式时都要先问
+「经过 artifact 中转后还能不能跑」，并把可验证的复验步骤写进构建脚本。
+
+## 环境依赖的验收项要「显式跳过」，不能伪装成通过或失败
+
+Decision: 两处环境相关的检查改成「明确跳过 + 打印原因」：
+① `mac-assets-check.mjs` 中「用 Windows EXE 交叉验证 fuse 判定」在找不到 exe 时跳过
+（这是跨平台自检，会跑在没有 Windows 产物的机器上）；
+② `smoke-test.mjs` 的 LaunchServices「双击启动」验收，先用 `launchctl managername` 判断是否有 Aqua 图形会话，
+没有就跳过并说明「请在带桌面的 Mac 上确认」。
+
+Reason: ① 原本「文件不存在即判失败」会让 macOS runner 上的构建在自检阶段就整体失败 —— 明明环境和断言都没问题。
+② `open` 依赖图形会话，无 GUI 的 CI 里失败并不能说明应用有问题；但如果**不做这项检查**，
+又会丢掉「用户双击能不能启动」这个最关键的覆盖。
+因此正确做法是：有能力就真验，没能力就明说跳过，并把「有能力时的等价验证」保留下来。
+
+Impact: 这个项目里凡是有「环境前提」的断言，都必须写成三态（通过 / 失败 / 跳过并说明），
+不允许用「恒真」把检查糊过去。跳过必须出现在输出里，让人看得见。
+
+## 触发 CI 用 workflow_dispatch + push main，且上传步骤用 if: always()
+
+Decision: 触发条件为 `workflow_dispatch`（手动）与 push 到 `main`；并发按分支去重；
+产物上传步骤用 `if: always()` + `if-no-files-found: warn`，另有独立的 `Verify build output` 步骤
+在「确实没产出 dmg」时明确报错。
+
+Reason: 交付物不能因为「后段某个校验失败」就一起丢掉 —— 用户至少应该能拿到已经生成的文件去排查。
+同时也不能让「什么都没产出」悄悄通过，所以把「有没有产物」和「上传产物」拆成两步，各自职责单一。
+
+Impact: 新增工作流时保持这个形状：先严格断言，再无条件保存产物，失败时额外打印诊断信息。
+不要把「产物校验」和「产物上传」合并成一步。

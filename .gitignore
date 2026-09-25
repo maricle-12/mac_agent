@@ -33,3 +33,12 @@ Thumbs.db
 
 # 自动化检查产出的截图
 screenshots/
+
+# 便携版打包（Windows 见 build_release.bat，macOS 见 build_release_mac.command）
+release/
+packaging/node_modules/
+packaging/build/
+packaging/build-mac/
+logs/
+config/
+data/

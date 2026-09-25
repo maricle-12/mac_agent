@@ -9,8 +9,8 @@ export interface ApiSettings {
   rememberApiKey: boolean
 }
 
-/** API Key 的存储位置 */
-export type ApiKeyStorage = 'session' | 'local' | 'none'
+/** API Key 的存储位置（server = 便携版：保存在本机 config/settings.json，不进浏览器） */
+export type ApiKeyStorage = 'session' | 'local' | 'server' | 'none'
 
 /** 通用 UI 偏好，存 localStorage */
 export interface UiPreferences {

@@ -1,18 +1,26 @@
 {
   "name": "ai-edu-agent",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "可公网访问的网页版 AI 教育智能体（用户自带 API Key）",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:portable": "tsc -b && vite build --mode portable",
     "preview": "vite preview",
     "preview:pages": "node scripts/preview-pages.mjs",
     "typecheck": "tsc -b",
     "check:ui": "node scripts/ui-check.mjs",
     "check:sse": "node scripts/sse-parse-check.mjs",
-    "check:stream": "node scripts/stream-check.mjs"
+    "check:stream": "node scripts/stream-check.mjs",
+    "check:paths": "node packaging/scripts/paths-check.mjs",
+    "check:mac-assets": "node packaging/scripts/mac-assets-check.mjs",
+    "build:win": "node packaging/scripts/build-release.mjs",
+    "build:mac": "node packaging/scripts/build-mac.mjs",
+    "build:mac:arm64": "node packaging/scripts/build-mac.mjs --arch=arm64",
+    "build:mac:x64": "node packaging/scripts/build-mac.mjs --arch=x64",
+    "build:mac:cn": "node packaging/scripts/build-mac.mjs --node-mirror=https://npmmirror.com/mirrors/node"
   },
   "dependencies": {
     "idb": "^8.0.3",

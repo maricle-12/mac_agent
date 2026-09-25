@@ -17,7 +17,12 @@ const candidates = [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  // macOS / Linux（在 Mac 上做验收时需要）
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
 ].filter(Boolean)
 
 const browserPath = candidates.find((item) => existsSync(item))

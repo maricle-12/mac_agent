@@ -28,6 +28,10 @@ const candidates = [
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  // macOS / Linux（在 Mac 上做发行版验收时需要）
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/usr/bin/google-chrome',
   '/usr/bin/chromium',
 ].filter(Boolean)
@@ -113,8 +117,34 @@ async function evaluate(ws, sessionId, expression) {
   return result.result.value
 }
 
-/** 直接读取 IndexedDB，用于校验持久化结果而不是只看界面 */
+/**
+ * 直接读取持久化结果，用于校验「真的落库了」而不是只看界面。
+ *
+ * v1.0.1 起有两种数据来源：
+ * - 便携版：聊天历史在本机 SQLite（data/app.db），通过 /api/local/conversations 读取；
+ * - 网页版：聊天历史在浏览器 IndexedDB。
+ */
 const DB_DUMP_EXPR = `
+  const useServer = await (async () => {
+    try {
+      const response = await fetch('/api/local/info', { headers: { Accept: 'application/json' } });
+      if (!response.ok) return false;
+      const data = await response.json();
+      return Boolean(data && data.local === true);
+    } catch { return false; }
+  })();
+
+  if (useServer) {
+    const response = await fetch('/api/local/conversations');
+    const body = await response.json();
+    const all = Array.isArray(body.conversations) ? body.conversations : [];
+    return {
+      source: 'sqlite',
+      count: all.length,
+      rows: all.map((item) => item.title + '(' + item.messages.length + ')'),
+    };
+  }
+
   const db = await new Promise((resolve) => {
     const request = indexedDB.open('ai-edu-agent');
     request.onsuccess = () => resolve(request.result);
@@ -127,7 +157,11 @@ const DB_DUMP_EXPR = `
     request.onerror = () => resolve([]);
   });
   db.close();
-  return { count: all.length, rows: all.map((item) => item.title + '(' + item.messages.length + ')') };
+  return {
+    source: 'indexeddb',
+    count: all.length,
+    rows: all.map((item) => item.title + '(' + item.messages.length + ')'),
+  };
 `
 
 /** 页面内可复用的 DOM 辅助函数（注入到每个表达式前） */
@@ -173,6 +207,27 @@ class SkipError extends Error {}
 const steps = []
 function step(name, fn, options = {}) {
   steps.push({ name, fn, requiresWorker: options.requiresWorker === true })
+}
+
+/**
+ * 便携版（本地服务）检测。
+ *
+ * v1.0.1 起，Windows 便携版的聊天历史存在本机 SQLite、API Key 存在本机 config/settings.json，
+ * 浏览器不再保存完整 Key。因此与浏览器存储相关的断言在本地模式下要换一种验证方式
+ * （验证「确实没有保存到浏览器」，而不是「保存到了哪个浏览器存储」）。
+ */
+async function detectLocalMode(ctx) {
+  if (ctx.localMode === undefined) {
+    ctx.localMode = await ctx.eval(`
+      try {
+        const response = await fetch('/api/local/info', { headers: { Accept: 'application/json' } });
+        if (!response.ok) return false;
+        const data = await response.json();
+        return data && data.local === true;
+      } catch { return false; }
+    `)
+  }
+  return ctx.localMode
 }
 
 /** Worker 地址：默认本地 wrangler dev，可用 WORKER_URL 覆盖 */
@@ -303,6 +358,20 @@ const LAST_ANSWER_EXPR = `
 async function ensureApiKey(ctx) {
   if (!(await ctx.eval(`return document.body.innerText.includes('未配置');`))) return
 
+  if (await detectLocalMode(ctx)) {
+    // 便携版：Key 由本机服务保存，且保存前会用真实请求验证，这里直接通过本地接口写入
+    await ctx.eval(`
+      await fetch('/api/local/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: 'sk-error-case-local-key-0000', verify: false }),
+      });
+      return true;
+    `)
+    await ctx.reload()
+    return
+  }
+
   await ctx.eval(`return clickText('设置');`)
   await sleep(300)
   await ctx.eval(`return setValue('#api-key', 'sk-error-case-key');`)
@@ -404,6 +473,26 @@ step('点击快捷卡片 → 内容填入输入框', async (ctx) => {
 })
 
 step('配置 API Key（供后续流式用例使用）', async (ctx) => {
+  if (await detectLocalMode(ctx)) {
+    // 便携版：Key 保存在本机服务，且保存前会先用真实请求验证一次，
+    // 因此这里通过本地接口写入（verify:false）来准备后续用例。
+    const saved = await ctx.eval(`
+      const response = await fetch('/api/local/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: 'sk-ui-check-local-key-000000', verify: false }),
+      });
+      return response.ok;
+    `)
+    ctx.assert(saved, '便携版写入本机 API 配置失败')
+    await ctx.reload()
+    ctx.assert(
+      await ctx.eval(`return document.body.innerText.includes('待验证');`),
+      '便携版配置 Key 后顶部状态未更新',
+    )
+    return
+  }
+
   await ctx.eval(`return clickText('设置');`)
   await sleep(300)
   await ctx.eval(`return setValue('#api-key', 'sk-ui-check-session-key');`)
@@ -758,6 +847,44 @@ step('System Prompt：按模式正确注入且不写入历史', async (ctx) => {
 })
 
 step('API 设置弹窗：字段与隐私提示', async (ctx) => {
+  if (await detectLocalMode(ctx)) {
+    await ctx.eval(`return clickText('设置');`)
+    await sleep(300)
+    const localInfo = await ctx.eval(`
+      return {
+        masked: $('[data-testid="masked-api-key"]')?.textContent ?? '',
+        hasResetButton: Boolean(byExact('重新设置')),
+        hasKeyInput: Boolean($('#api-key')),
+        hasBaseUrl: $('[id="api-base-url"]')?.value ?? '',
+        hasModel: $('[id="api-model"]')?.value ?? '',
+        privacy: document.body.innerText.includes('不会将 API Key 保存到云端数据库'),
+        serverHint: document.body.innerText.includes('API Key 保存在本机'),
+        provider: $('[id="api-provider"]')?.value ?? '',
+      };
+    `)
+    ctx.assert(/^sk-\*{4}/.test(localInfo.masked), `便携版未显示脱敏 Key: ${localInfo.masked}`)
+    ctx.assert(localInfo.hasResetButton, '便携版缺少「重新设置」按钮')
+    ctx.assert(!localInfo.hasKeyInput, '便携版不应把完整 Key 回填到输入框')
+    ctx.assert(localInfo.hasBaseUrl === 'https://api.deepseek.com', `Base URL 默认值异常: ${localInfo.hasBaseUrl}`)
+    ctx.assert(localInfo.hasModel === 'deepseek-chat', `Model 默认值异常: ${localInfo.hasModel}`)
+    ctx.assert(localInfo.provider === 'deepseek', `Provider 默认值异常: ${localInfo.provider}`)
+    ctx.assert(localInfo.privacy, '隐私提示文案缺失')
+    ctx.assert(localInfo.serverHint, '便携版缺少「API Key 保存在本机」说明')
+
+    // 点击「重新设置」应出现空输入框，且不会带出旧 Key
+    await ctx.eval(`return clickExact('重新设置');`)
+    await sleep(250)
+    const editing = await ctx.eval(`
+      return { hasKeyInput: Boolean($('#api-key')), value: $('[id="api-key"]')?.value ?? 'x' };
+    `)
+    ctx.assert(editing.hasKeyInput, '点击「重新设置」后未出现输入框')
+    ctx.assert(editing.value === '', '「重新设置」时不应把旧 Key 回填到输入框')
+
+    await ctx.eval(`return clickExact('取消');`)
+    await sleep(250)
+    return
+  }
+
   await ctx.eval(`return clickText('设置');`)
   await sleep(300)
   const info = await ctx.eval(`
@@ -910,6 +1037,61 @@ step(
       ctx.skip('端点未配置，跳过成功分支界面验证')
     }
 
+    if (await detectLocalMode(ctx)) {
+      // 便携版：测试连接走本机服务（/api/local/settings/test），因此桩要打在本地接口上
+      await ctx.eval(`
+        window.__origFetch = window.fetch;
+        window.fetch = async (input, init) => {
+          const url = typeof input === 'string' ? input : input.url;
+          if (url.includes('/api/local/settings/test')) {
+            return new Response(JSON.stringify({ result: {
+              ok: true,
+              message: '连接成功',
+              preview: '你好！我是你的教学助手。',
+              model: 'deepseek-chat',
+              totalTokens: 11,
+              detail: 'HTTP 200 · 模型 deepseek-chat · 消耗 11 tokens',
+            } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          return window.__origFetch(input, init);
+        };
+        return true;
+      `)
+
+      await ctx.eval(`return clickText('设置');`)
+      await sleep(300)
+      await ctx.eval(`return clickText('测试连接');`)
+      await sleep(800)
+
+      const localInfo = await ctx.eval(`
+        return {
+          success: document.body.innerText.includes('连接成功'),
+          preview: document.body.innerText.includes('模型回复：'),
+          summary: document.body.innerText.includes('查看技术详情'),
+        };
+      `)
+
+      const localExpanded = await ctx.eval(`
+        const summary = $$('summary').find((el) => el.textContent.includes('查看技术详情'));
+        if (!summary) return false;
+        summary.click();
+        return true;
+      `)
+
+      const detailText = await ctx.eval(`return document.body.innerText.includes('HTTP 200');`)
+
+      await ctx.eval(`window.fetch = window.__origFetch; delete window.__origFetch; return true;`)
+      await ctx.eval(`return clickExact('取消');`)
+      await sleep(250)
+
+      ctx.assert(localInfo.success, '成功时未显示「连接成功」')
+      ctx.assert(localInfo.preview, '成功时未展示模型回复预览')
+      ctx.assert(localInfo.summary, '成功时未提供「查看技术详情」')
+      ctx.assert(localExpanded, '未能展开「查看技术详情」')
+      ctx.assert(detailText, '技术详情中未显示 HTTP 状态')
+      return
+    }
+
     // 用桩替身返回一条 OpenAI 兼容的成功响应，只验证成功分支的界面渲染
     await ctx.eval(`
       window.__origFetch = window.fetch;
@@ -969,6 +1151,30 @@ step(
 )
 
 step('API Key 默认只存 sessionStorage', async (ctx) => {
+  if (await detectLocalMode(ctx)) {
+    // 便携版：Key 只保存在本机服务，浏览器任何存储里都不应出现完整 Key
+    const probe = await ctx.eval(`
+      return {
+        sessionKeys: Object.keys(sessionStorage).filter((key) => key.includes('api-key')),
+        localKeys: Object.keys(localStorage).filter((key) => key.includes('api-key')),
+      };
+    `)
+    ctx.assert(probe.sessionKeys.length === 0, `sessionStorage 中不应有 API Key：${probe.sessionKeys}`)
+    ctx.assert(probe.localKeys.length === 0, `localStorage 中不应有 API Key：${probe.localKeys}`)
+
+    await ctx.eval(`sessionStorage.clear(); return true;`)
+    await ctx.reload()
+    ctx.assert(
+      await ctx.eval(`return document.body.innerText.includes('待验证');`),
+      '便携版 Key 保存在本机，清空浏览器会话后仍应保持已配置',
+    )
+    ctx.assert(
+      await ctx.eval(`return !document.body.innerText.includes('欢迎使用');`),
+      '已配置 Key 时不应显示首次使用引导',
+    )
+    return
+  }
+
   await ctx.eval(`return clickText('设置');`)
   await sleep(300)
   // 确保「记住此设备」未勾选
@@ -1034,6 +1240,27 @@ step('API Key 默认只存 sessionStorage', async (ctx) => {
 })
 
 step('勾选「记住此设备」后写入 localStorage', async (ctx) => {
+  if (await detectLocalMode(ctx)) {
+    // 便携版没有「记住此设备」这个选项：Key 一定保存在本机配置里，绝不写入浏览器
+    await ctx.eval(`return clickText('设置');`)
+    await sleep(300)
+    const probe = await ctx.eval(`
+      return {
+        hasRememberCheckbox: document.body.innerText.includes('在此设备记住 API Key'),
+        checkboxCount: $$('input[type="checkbox"]').length,
+        localKeys: Object.keys(localStorage).filter((key) => key.includes('api-key')),
+        masked: $('[data-testid="masked-api-key"]')?.textContent ?? '',
+      };
+    `)
+    ctx.assert(!probe.hasRememberCheckbox, '便携版不应出现「在此设备记住 API Key」选项')
+    ctx.assert(probe.checkboxCount === 0, '便携版设置弹窗不应有复选框')
+    ctx.assert(probe.localKeys.length === 0, `localStorage 中不应有 API Key：${probe.localKeys}`)
+    ctx.assert(/^sk-\*{4}/.test(probe.masked), `便携版应显示脱敏 Key：${probe.masked}`)
+    await ctx.eval(`return clickExact('取消');`)
+    await sleep(250)
+    return
+  }
+
   await ctx.eval(`return clickText('设置');`)
   await sleep(300)
   await ctx.eval(`return setValue('#api-key', 'sk-remembered-test-key');`)

@@ -10,7 +10,7 @@ export const appConfig = {
   /** 品牌标记：1~2 个字符或 emoji，渲染在圆角方块中 */
   logo: 'AI',
   /** 版本号 */
-  version: '0.1.0',
+  version: '1.0.1',
   /** 页脚 / 关于弹窗中的说明 */
   description:
     '无需安装、无需注册。使用你自己的模型 API Key，即可获得面向教学的智能助手能力。',
