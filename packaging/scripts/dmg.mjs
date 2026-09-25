@@ -124,7 +124,11 @@ export function verifyDmg(options) {
       record('应用包签名有效（codesign --verify --deep --strict）', signature.ok, signature.stderr.trim().split('\n').slice(-1)[0])
 
       const info = run('/usr/bin/codesign', ['-dv', appPath])
-      record('签名类型为 ad-hoc（无 Apple 开发者证书）', /adhoc/i.test(info.stderr) || /adhoc/i.test(info.stdout))
+      // ad-hoc 签名的判定要宽松一点：不同 macOS 版本 `codesign -dv` 的措辞不完全一致，
+      // 但「没有 Authority、没有 TeamIdentifier」是 ad-hoc 的可靠特征（我们本来就没用证书）。
+      const infoText = `${info.stderr}\n${info.stdout}`
+      const isAdhoc = /adhoc/i.test(infoText) || (!/Authority=/.test(infoText) && !/TeamIdentifier=/.test(infoText))
+      record('签名类型为 ad-hoc（无 Apple 开发者证书）', isAdhoc)
 
       // 必须在卸载之前问 Gatekeeper（它需要真实存在的路径）
       const spctl = run(SPCTL, ['-a', '-vvv', '-t', 'exec', appPath])
