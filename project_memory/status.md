@@ -26,7 +26,50 @@ git push  →  macos-latest runner：checkout → setup-node 22 → npm ci(根 +
 | 架构 | 默认 universal（arm64 复用 runner 的 Node，x64 从 nodejs.org 下载并校验 SHA-256，再 lipo 合成） |
 | 分钟数 | 仓库公开后标准 runner **免费不限量**（私有仓库时 macOS 按 10 倍计费，现已无此顾虑） |
 
-### ⚠️ 第三次 CI 失败：universal 的发行包自检未通过（已加诊断，等下一次运行定位）
+### ⚠️ 第四次 CI 失败：LaunchServices 健康检查超时（已定位并修复）
+
+失败项已被上一轮加的诊断精确指出：
+
+```
+universal 的发行包自检未通过
+失败项：双击启动后本地服务可用（健康检查超时）
+```
+
+同时日志里的 Mach-O 核对证明：`Contents/MacOS/启动智能体` 的 `lipo -info` 是
+`Architectures in the fat file: x86_64 arm64` —— **`.app` 确实是双架构，不是 universal 的问题**
+（这也印证了上一轮的判断：第 8 步静态断言全过，问题在第 9 步的运行期断言）。
+
+**根因**：`launchctl managername` 在 GitHub Actions 的 macOS runner 上**返回 `Aqua`**（假阳性），
+于是脚本执行了 LaunchServices「双击」验收：`open` 退出码 0（LaunchServices 接受了请求），
+但应用**从未在预期端口起来** → 60s 健康检查超时。
+这种失败反映的是 CI 环境（无法保证 WindowServer / 会话真的可用），**不可归因于应用**。
+
+**影响（比看起来更严重）**：第 9 步失败 → `fail()` 直接退出 →
+**第 10 步（hdiutil 出 dmg、ditto 出 zip）根本没执行**，所以那次运行连交付物都没有。
+
+**修复**（`smoke-test.mjs`，未改应用启动逻辑 / SEA / Windows）
+
+| 改动 | 说明 |
+| --- | --- |
+| 新增 `inspectGuiSession()` 三信号合取 | **必须在 CI 之外** + `launchctl managername == Aqua` + `/dev/console` 有真实登录用户。单个「身份类」信号不足以判断环境能力 |
+| 不满足时跳过并打印约定措辞 | `CI环境无GUI会话，跳过LaunchServices启动验收`；并明确列出「已跳过」（open / 模拟双击 / 等健康检查）与「仍然执行」（应用包结构、codesign、Mach-O 架构、第 10 步 DMG 挂载验收） |
+| 人工强制开关 | `AI_EDU_STRICT_LAUNCHSERVICES=1 npm run build:mac` —— 在带桌面的 Mac 上仍可做完整双击验收 |
+| 超时失败时的诊断加强 | 期望端口无响应时，再探 8765~8774：若在别的端口发现实例，说明 LaunchServices 未转发 `--args`；默认端口段也没有才说明应用未真正启动 |
+| 判定函数导出 | `inspectGuiSession` 可从外部调用，便于在任意机器上确定性地验证两种分支 |
+
+**本轮已验证**
+
+- 判定函数行为（在本机 win32 上确定性验证）：
+  `CI=true` → `usable=false`，理由含「在 CI 环境中…、不在 Aqua 图形域、控制台没有真实登录用户」；
+  `AI_EDU_STRICT_LAUNCHSERVICES=1` → `usable=true` 并注明「已强制开启」。
+- `check:paths` **61/61**（新增 7 条：约定跳过措辞、跳过时说明仍执行什么、超时诊断、两种判定分支等）、
+  `check:mac-assets` **45/45**、`check:mac-build` 预检通过。
+- `build:win` **19/19 + 25/25**，体积与改造前完全一致（Windows 流程未受影响）。
+
+**预期结果**：CI 上第 9 步不再中断 → 第 10 步正常产出
+`AI教育智能体_v1.0.1_macOS_universal.dmg` 与 `..._universal.app.zip` → Artifacts 可下载。
+
+### ⚠️ 第三次 CI 失败：universal 的发行包自检未通过（已加诊断，据此定位到第四次）
 
 CI 走到了**最后一步**（第 9 步发行包自检），日志末尾是：
 
@@ -47,6 +90,9 @@ CI 走到了**最后一步**（第 9 步发行包自检），日志末尾是：
 **这次没能确定的事实**：具体是**哪一项**运行期断言没过。原因是旧代码只在中间某行打印 `✗ 名称`，
 最后的错误信息只有一句「自检未通过」，而且**只有抛异常时才会打印被验程序的 `app.log`**，
 「某个断言没过」时反而不打印 —— 远程构建看不到日志细节，只能再跑一轮去猜。
+
+> **结果：这一轮加的诊断立刻见效了** —— 下一次运行就精确报出失败项是
+> `双击启动后本地服务可用（健康检查超时）`，据此定位到第四次失败（见上一节）。
 
 **本轮改动（不猜、先让失败能自证）**
 
@@ -72,6 +118,8 @@ CI 走到了**最后一步**（第 9 步发行包自检），日志末尾是：
 
 > 下一次运行无论成败，日志都会明确给出：失败项名称、被验程序自己的日志、以及包内每个 Mach-O 的架构。
 > 若仍失败，把这三段发回来即可直接定位。
+
+（结论：下一次运行确实给出了失败项名称，见上一节「第四次 CI 失败」。）
 
 ### ⚠️ 第二次 CI 失败与修复（架构名跨命名体系比较）
 

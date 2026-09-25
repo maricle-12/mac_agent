@@ -618,6 +618,14 @@ Reason: ① 原本「文件不存在即判失败」会让 macOS runner 上的构
 Impact: 这个项目里凡是有「环境前提」的断言，都必须写成三态（通过 / 失败 / 跳过并说明），
 不允许用「恒真」把检查糊过去。跳过必须出现在输出里，让人看得见。
 
+**2026-09 补充（重要）**：CI 上真实出现过一次「假阳性环境判断」——
+`launchctl managername` 在 GitHub macOS runner 上返回 `Aqua`，于是脚本执行了 LaunchServices 验收，
+结果是 `open` 退出码 0 而应用从未在预期端口起来（`双击启动后本地服务可用（健康检查超时）`），
+构建在第 9 步失败，**致使第 10 步的 dmg / zip 完全没有产出**。
+结论：**单个「身份类」信号不足以判断环境能力**。现在改为三信号合取
+（不在 CI 中 + `Aqua` + `/dev/console` 有真实登录用户，见 `smoke-test.mjs` 的 `inspectGuiSession()`），
+并提供 `AI_EDU_STRICT_LAUNCHSERVICES=1` 作为人工强制开关。
+
 ## 触发 CI 用 workflow_dispatch + push main，且上传步骤用 if: always()
 
 Decision: 触发条件为 `workflow_dispatch`（手动）与 push 到 `main`；并发按分支去重；

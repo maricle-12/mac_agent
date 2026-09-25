@@ -177,13 +177,32 @@ git push  ─────────────────────►    
 1. **文件权限不随 artifact 传递**：`upload-artifact` 会丢弃文件的权限位，所以**不能**直接上传 `.app` 目录。
    本项目上传的是 `hdiutil` 生成的 `.dmg` 与 `ditto` 生成的 `.app.zip` —— 权限与签名都封在归档内部，
    用户解压/挂载后完全正常。（这也是为什么要额外产出一个 zip，而不仅仅是 dmg。）
-2. **「双击启动」验收依赖图形会话**：验证用 `/usr/bin/open`（LaunchServices）拉起 `.app`，
-   而 `open` 需要登录用户的 Aqua 会话。构建脚本会先用 `launchctl managername` 判断：
-   - 有 Aqua 会话 → 真的拉起一次并断言接口可用；
-   - 没有 → **明确跳过并打印原因**（而不是误报成构建失败）。
+2. **「双击启动」验收依赖真正可用的图形会话**：验证用 `/usr/bin/open`（LaunchServices）拉起 `.app`，
+   而 `open` 需要登录用户的图形会话。**`launchctl managername` 在 CI 上会给出假阳性**
+   （实测：GitHub macOS runner 上它返回 `Aqua`，`open` 退出码也是 0，
+   但应用从未在预期端口起来，报出 `双击启动后本地服务可用（健康检查超时）`）。
+   因此判定改为**三信号合取**（见 `smoke-test.mjs` 的 `inspectGuiSession()`）：
 
-   无论哪种情况，脚本都会做「直接启动可执行文件 + 打完整接口矩阵 + 校验 `codesign --verify --deep --strict`」，
-   所以「应用能不能跑、签名有没有效」在 CI 上是被真实验证过的。
+   | 信号 | 要求 |
+   | --- | --- |
+   | 是否在 CI | **必须在 CI 之外**（CI 环境无法保证 WindowServer / 会话真的可用） |
+   | 图形域 | `launchctl managername` == `Aqua` |
+   | 控制台用户 | `stat -f %Su /dev/console` 是真实登录用户（不是 `root`/空） |
+
+   - 三个信号都满足（典型场景：开发者的 Mac）→ **执行完整启动验收**（`open` → 健康检查 → 独立数据目录 → 退出）。
+   - 不满足（典型场景：CI）→ 打印 `CI环境无GUI会话，跳过LaunchServices启动验收`，
+     并明确列出已跳过与仍然执行的内容；**构建继续**。
+   - 需要在带桌面的 Mac 上强制做这项验收：`AI_EDU_STRICT_LAUNCHSERVICES=1 npm run build:mac`。
+
+   **跳过不代表「少验证」**：无论是否跳过，脚本都会做
+   - 直接启动可执行文件 + 打完整接口矩阵（Phase A，含 SQLite 落库、跨站拒绝、单实例、退出）；
+   - `codesign --verify --strict`（主程序）与 `--deep --strict`（整包）；
+   - Mach-O 架构检查（全包每个 Mach-O 的架构族 + `lipo -info` 原文）；
+   - 第 10 步的 DMG 打包与**挂载验收**（镜像校验、卷内 `.app`、挂载后复验签名、Gatekeeper 结论）。
+
+   > 顺带说明为什么这条很重要：跳过的直接效果是**第 9 步不再中断**，
+   > 于是第 10 步能正常跑完并产出 `.dmg` / `.app.zip`。
+   > 之前正是因为第 9 步失败，交付物根本没被生成。
 
 ### 如果你想连 Windows 版一起自动构建
 

@@ -19,6 +19,8 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
+import { inspectGuiSession } from './smoke-test.mjs'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const packagingDir = path.resolve(__dirname, '..')
 const demoRoot = path.resolve(packagingDir, '..')
@@ -388,6 +390,47 @@ const WIN_HOME = 'C:\\Users\\tester'
     'smoke-test.mjs 在「断言没过」时也打印诊断与 app.log（不只是抛异常时）',
     smokeSource.includes('自检诊断：') && smokeSource.includes("smoke-data-launchservices"),
   )
+  // 用户明确要求的跳过措辞，防止被无意改掉（日志/文档都按这句话检索）
+  check(
+    'smoke-test.mjs 使用约定的跳过措辞「CI环境无GUI会话，跳过LaunchServices启动验收」',
+    smokeSource.includes('CI环境无GUI会话，跳过LaunchServices启动验收'),
+  )
+  check(
+    '跳过时明确说明「哪些仍照常执行」（结构 / codesign / Mach-O / DMG）',
+    smokeSource.includes('Mach-O 架构检查') && smokeSource.includes('DMG 挂载验收在第 10 步照常执行'),
+  )
+  check(
+    '跳过时给出「实例起在了别的端口」的诊断（区分未转发 --args 与未启动）',
+    smokeSource.includes('LaunchServices 可能未转发 --args'),
+  )
+}
+
+// ---------------------------------------------------------------- E. CI/图形会话判定
+//
+// LaunchServices（open）验收只有在「能把失败归因于应用」的环境里才该做。
+// GitHub 的 macOS runner 上 launchctl managername 会返回 Aqua（假阳性），
+// 因此判定改为「不在 CI + Aqua + 控制台有真实用户」三信号合取。
+// 这里直接调用判定函数验证它——两种环境都可以在任意机器上确定性地测出来。
+{
+  const savedCI = process.env.CI
+  const savedStrict = process.env.AI_EDU_STRICT_LAUNCHSERVICES
+  try {
+    process.env.CI = 'true'
+    delete process.env.AI_EDU_STRICT_LAUNCHSERVICES
+    const inCi = inspectGuiSession()
+    check('CI 环境下判定为「无可用图形会话」（跳过 LaunchServices 验收）', inCi.usable === false, inCi.detail)
+    check('CI 判定理由里明确提到 CI 与图形域', inCi.detail.includes('CI') && inCi.detail.includes('Aqua'), inCi.detail)
+
+    process.env.AI_EDU_STRICT_LAUNCHSERVICES = '1'
+    const forced = inspectGuiSession()
+    check('设置 AI_EDU_STRICT_LAUNCHSERVICES=1 可强制开启（供真实 Mac 人工验收）', forced.usable === true, forced.detail)
+    check('强制开启时也把判定依据打进日志', forced.detail.includes('强制'), forced.detail)
+  } finally {
+    if (savedCI === undefined) delete process.env.CI
+    else process.env.CI = savedCI
+    if (savedStrict === undefined) delete process.env.AI_EDU_STRICT_LAUNCHSERVICES
+    else process.env.AI_EDU_STRICT_LAUNCHSERVICES = savedStrict
+  }
 }
 
 // ---------------------------------------------------------------- 输出

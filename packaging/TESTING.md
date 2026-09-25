@@ -31,7 +31,7 @@
 ### A1. 与平台无关的静态自检（Windows 上即可跑完）
 
 ```bash
-npm run check:paths        # 54 项：跨平台目录规则 + 平台分发 + 构建期路径不变量 + 架构名归一化 + 可诊断性
+npm run check:paths        # 61 项：跨平台目录规则 + 平台分发 + 构建期路径/架构名不变量 + CI 图形会话判定
 npm run check:mac-assets   # 45 项：ICNS/PNG CRC、Info.plist、Mach-O 解析与架构映射、全包 Mach-O 扫描
 npm run check:mac-build    # macOS 构建线的「打包前半段」：Worker 打包 → 启动器打包 → 图标 → SEA blob
 npm run check:sse          # 30 项：SSE 解析器（含逐字节与随机切分）
@@ -111,8 +111,13 @@ npm run check:sse          # 30 项：SSE 解析器（含逐字节与随机切�
 
 - **`upload-artifact` 不保留文件权限**，所以上传的是 `.dmg` 与 `ditto` 生成的 `.app.zip`（权限与签名封在归档内），
   **不是** 裸 `.app` 目录；构建脚本还会把 zip 解压回来复验 `codesign --verify --deep --strict`。
-- **`LaunchServices`「双击」验收需要图形会话**：脚本先查 `launchctl managername`，
-  非 `Aqua` 时**明确跳过并打印原因**（不误报为失败）；其余（真启动二进制 + 完整接口矩阵 + 签名复验）照常执行。
+- **`LaunchServices`「双击」验收需要真正可用的图形会话**：脚本用 `inspectGuiSession()`
+  做**三信号合取**判断（不在 CI 中 + `launchctl managername` == `Aqua` + `/dev/console` 有真实登录用户），
+  不满足时打印 `CI环境无GUI会话，跳过LaunchServices启动验收` 并**跳过**该项；
+  其余（真启动二进制 + 完整接口矩阵 + 签名复验 + DMG 挂载验收）照常执行。
+  强制开启：`AI_EDU_STRICT_LAUNCHSERVICES=1`。
+  > 只用 `launchctl managername` 是不够的：实测 GitHub macOS runner 上它返回 `Aqua`
+  > （假阳性），`open` 退出码 0 但应用未起来 —— 这种失败不可归因于应用。
 
 ## B. Windows 人工验收清单
 
