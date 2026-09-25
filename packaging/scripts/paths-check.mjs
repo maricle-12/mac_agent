@@ -370,6 +370,24 @@ const WIN_HOME = 'C:\\Users\\tester'
     !/\.arches\.includes\(/.test(macBuildSource),
   )
   check('build-mac.mjs 用 archFamilies 判断通用包与静态断言', (macBuildSource.match(/archFamilies/g) || []).length >= 2)
+
+  // ---- universal 自检的可诊断性 ----
+  // 目标：「失败时能直接看出是哪一项、以及包里哪个文件不是 universal」，
+  // 而不是只留下一句「发行包自检未通过」。
+  check('build-mac.mjs 扫描包内所有 Mach-O（不只主可执行文件）', macBuildSource.includes('auditMachOFiles('))
+  check(
+    'build-mac.mjs 有「全部 Mach-O 都含目标架构」的静态断言',
+    /应用包内全部 Mach-O 都含/.test(macBuildSource),
+  )
+  check(
+    'build-mac.mjs 在自检失败时把失败项写进最终错误信息',
+    macBuildSource.includes('发行包自检未通过：') && macBuildSource.includes('reportMachOFiles('),
+  )
+  const smokeSource = fs.readFileSync(path.join(packagingDir, 'scripts', 'smoke-test.mjs'), 'utf8')
+  check(
+    'smoke-test.mjs 在「断言没过」时也打印诊断与 app.log（不只是抛异常时）',
+    smokeSource.includes('自检诊断：') && smokeSource.includes("smoke-data-launchservices"),
+  )
 }
 
 // ---------------------------------------------------------------- 输出

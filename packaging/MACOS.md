@@ -242,6 +242,24 @@ xattr -dr com.apple.quarantine /Applications/AI教育智能体.app
 > （见 Node 文档 “Platform support” 一节）。因此 x64 这份不能只靠静态断言，
 > `build:mac` 会对每个架构都真启动一次并打接口（含 LaunchServices 启动），失败即中断构建。
 
+### 怎么确认「真的是 universal」
+
+构建脚本会自己把证据打进日志，不需要人工去猜：
+
+1. **合成后立刻打印 `lipo -info`**（`lipo` 自己的判定，不是我们解析的结论）；
+2. **组装完 `.app` 后立刻做一次全包 Mach-O 核对**，打印：
+   - `Contents/MacOS/` 与 `Contents/Resources/` 下都有什么；
+   - 扫描了多少文件、其中几个是 Mach-O；
+   - **每个 Mach-O 文件**的相对路径、原始架构名（`arm64` / `x86_64`）、归一化架构族、
+     是否满足目标架构集合、以及该文件的 `lipo -info` 原文；
+   - 明确列出「架构不满足的文件」。
+3. **静态断言**：`[通用包] 应用包内全部 Mach-O 都含 arm64 + x64`。
+   注意是扫**整个包**而不是只看主可执行文件 —— 将来若往包里加 dylib / helper，
+   它们同样必须是双架构，只看主程序会漏掉。
+
+> 架构名归一化请见 §8 的 `x64 二进制架构不符` 条目：Mach-O 里是 `x86_64`，
+> Node 分发包里是 `x64`，两者由 `macho.mjs` 的架构族统一。
+
 ---
 
 ## 8. 故障排查
@@ -259,6 +277,7 @@ xattr -dr com.apple.quarantine /Applications/AI教育智能体.app
 | 端口被占用 | 启动器会自动顺延（默认 8765 起）。也可用 `--port=xxxx` 指定（打开终端属于排查手段，不是用户必需步骤）。 |
 | `Could not resolve "../build/worker.cjs"` | **已修复，不应再出现。** 根因是 macOS 构建把 Worker 产物写到了 `packaging/build-mac/worker.cjs`，而 `packaging/src/local-server.cjs` 里那句 `require('../build/worker.cjs')` 只认 `packaging/build/worker.cjs`（Windows 构建「刚好」也写 `packaging/build/`，所以只有 macOS 会挂）。现在两个平台都必须通过 `lib/common.mjs` 的 `ensureWorkerBundle()` 生成产物，位置由 `WORKER_BUNDLE_RELPATH` 统一声明，并且 `npm run check:paths` 会断言「local-server 要求的路径 == 构建脚本写入的路径」。若仍见到此错误，先跑 `npm run check:paths` 与 `npm run check:mac-build`。 |
 | `x64 二进制架构不符：实际 x86_64` | **已修复，不应再出现。** 根因是拿 Mach-O 头部的架构名（`x86_64`）直接和 Node 分发包的架构名（`x64`）比较；`arm64` 在两套命名里同名，所以只有 x64 会暴露。现在所有架构比较都走 `macho.mjs` 的架构族归一化（`ARCH_FAMILIES` / `archFamily()` / `sameArch()`）；`readMachO()` 同时返回原始名（`arch`、`arches`，用于显示与排查）与归一化族（`archFamily`、`archFamilies`，**用于所有断言**）。`npm run check:paths` 会断言构建脚本不再跨命名体系直接比较，`npm run check:mac-assets` 会断言映射本身（含 `x86_64 ↔ x64` 这一对）。 |
+| `[失败] universal 的发行包自检未通过` | **现在会直接告诉你哪几项没过。** 失败原因里会带上失败项名称与细节，并额外打印 `--- 自检诊断 ---`（失败项清单 + 应用自己的 `app.log` 末尾 40 行 + 两个实例分别用的数据目录）以及一份 Mach-O 架构核对。先看这几段，再对照本节判断。注意 `universal` 只是目标名（`--arch=universal`），与「包里某个文件不是双架构」不一定相关 —— 诊断里的「架构核对」会明确列出每个 Mach-O 的实际架构与 `lipo -info` 原文。 |
 | 构建日志里只有 `worker build failed` | Worker 打包步骤真的失败了（最常见的是 `worker/src/index.ts` 被改名/删除，或 esbuild 依赖没装上）。这一行**后面会紧跟具体原因**；先确认 `packaging/node_modules` 已安装（`cd packaging && npm ci`），再确认 worker 源码存在。 |
 
 ### GitHub Actions 上失败时

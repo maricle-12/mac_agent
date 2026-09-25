@@ -10,6 +10,8 @@
  */
 
 import fs from 'node:fs'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 const MH_MAGIC_64 = 0xfeedfacf
 const FAT_MAGIC = 0xcafebabe
@@ -195,3 +197,113 @@ export const SEA_FUSE_NAME = SEA_FUSE
 
 export const SEA_SEGMENT_NAME = 'NODE_SEA'
 export const SEA_RESOURCE_NAME = 'NODE_SEA_BLOB'
+
+// ---------------------------------------------------------------- Mach-O 扫描
+//
+// 用途：回答「这个应用包里到底哪个文件不是 universal」。
+// 只看主可执行文件是不够的 —— 应用包里原则上任何 Mach-O（可执行文件、dylib、
+// 未来可能加进来的 helper）都必须是双架构，否则在另一类 Mac 上会启动失败。
+
+/** Mach-O 的几种 magic（thin 32/64、fat 32/64，含大小端两种写法） */
+const MACHO_MAGICS = new Set([
+  0xfeedface, // MH_MAGIC（32 位，大端文件序）
+  0xcefaedfe, // MH_CIGAM
+  0xfeedfacf, // MH_MAGIC_64
+  0xcffaedfe, // MH_CIGAM_64
+  0xcafebabe, // FAT_MAGIC
+  0xbebafeca, // FAT_CIGAM
+  0xcafebabf, // FAT_MAGIC_64
+  0xbfbafeca, // FAT_CIGAM_64
+])
+
+/**
+ * 只读文件头 4 字节判断是不是 Mach-O。
+ * @returns {null | { macho: any|null, error: string|null }} 不是 Mach-O 返回 null
+ */
+export function detectMachO(filePath) {
+  let fd = null
+  try {
+    fd = fs.openSync(filePath, 'r')
+    const head = Buffer.alloc(4)
+    if (fs.readSync(fd, head, 0, 4, 0) < 4) return null
+    if (!MACHO_MAGICS.has(head.readUInt32BE(0)) && !MACHO_MAGICS.has(head.readUInt32LE(0))) return null
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  try {
+    return { macho: readMachO(filePath), error: null }
+  } catch (error) {
+    // 是 Mach-O（magic 对得上）但解析失败，例如 32 位或损坏 —— 如实报告，不静默略过
+    return { macho: null, error: error && error.message ? error.message : String(error) }
+  }
+}
+
+/**
+ * 递归扫描目录下所有 Mach-O 文件，逐个给出架构信息（可选再取 `lipo -info` 原文）。
+ *
+ * @param {string} rootDir
+ * @param {{ lipoPath?: string|null }} [options]
+ * @returns {{ entries: Array<{relative: string, macho: any|null, error: string|null, lipoInfo: string|null, universal: boolean}>,
+ *            problems: string[], machoCount: number, fileCount: number }}
+ */
+export function auditMachOFiles(rootDir, options = {}) {
+  const lipoPath = options.lipoPath ?? null
+  const canLipo = Boolean(lipoPath) && fs.existsSync(lipoPath)
+  const entries = []
+  const problems = []
+  let fileCount = 0
+
+  const walk = (dir) => {
+    let items = []
+    try {
+      items = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const item of items) {
+      const full = path.join(dir, item.name)
+      // 符号链接跳过：既避免重复统计，也避免目录环
+      if (item.isSymbolicLink()) continue
+      if (item.isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (!item.isFile()) continue
+      fileCount += 1
+
+      const detected = detectMachO(full)
+      if (!detected) continue
+
+      const relative = path.relative(rootDir, full)
+      let lipoInfo = null
+      if (canLipo) {
+        const result = spawnSync(lipoPath, ['-info', full], { encoding: 'utf8' })
+        const text = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+        lipoInfo = text ? text.split('\n').filter(Boolean).pop() : null
+      }
+
+      const archFamilies = detected.macho ? detected.macho.archFamilies : []
+      entries.push({
+        relative,
+        macho: detected.macho,
+        error: detected.error,
+        lipoInfo,
+        universal: archFamilies.includes('arm64') && archFamilies.includes('x64'),
+      })
+      if (detected.error) problems.push(`${relative}：Mach-O 解析失败（${detected.error}）`)
+    }
+  }
+
+  walk(rootDir)
+
+  return { entries, problems, machoCount: entries.length, fileCount }
+}

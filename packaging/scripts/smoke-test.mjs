@@ -131,6 +131,8 @@ export async function smokeTest(options) {
   let secondChild = null
   /** macOS 阶段 B 由 LaunchServices 启动，拿不到子进程句柄，只能记 PID 以便兜底收尾 */
   let launchedViaOpenPid = null
+  /** 抛出的异常（用于在 finally 里决定要不要打印诊断） */
+  let thrownError = null
 
   const healthUrl = (p) => `http://127.0.0.1:${p}/api/health`
   const apiUrl = (p, suffix) => `http://127.0.0.1:${p}${suffix}`
@@ -160,7 +162,7 @@ export async function smokeTest(options) {
       windowsHide: true,
     })
 
-    const health = await waitForHealth(port, 30_000)
+    const health = await waitForHealth(port, 60_000)
     record('启动并监听 127.0.0.1', Boolean(health), health ? `端口 ${port}` : '健康检查超时')
     if (!health) throw new Error(`自检失败：本地服务没有起来（可执行文件：${executable}）`)
 
@@ -280,7 +282,7 @@ export async function smokeTest(options) {
         const openExit = await new Promise((resolve) => open.on('exit', resolve))
         record('LaunchServices 能拉起应用包（等价于用户双击）', openExit === 0, `open 退出码 ${openExit}`)
 
-        const second = await waitForHealth(secondPort, 40_000)
+        const second = await waitForHealth(secondPort, 60_000)
         record('双击启动后本地服务可用', Boolean(second), second ? `端口 ${secondPort}` : '健康检查超时')
         if (second) {
           launchedViaOpenPid = second.pid ?? null
@@ -294,7 +296,7 @@ export async function smokeTest(options) {
             method: 'POST',
             headers: { Origin: `http://127.0.0.1:${secondPort}` },
           }).catch(() => null)
-          record('双击启动的实例可以正常退出', await healthGone(secondPort, 8000))
+          record('双击启动的实例可以正常退出', await healthGone(secondPort, 15_000))
         }
       }
     }
@@ -321,34 +323,48 @@ export async function smokeTest(options) {
     }).catch(() => null)
 
     let exited = false
-    for (let i = 0; i < 30; i += 1) {
+    for (let i = 0; i < 25; i += 1) {
       if (child.exitCode !== null || child.killed) {
         exited = true
         break
       }
       await sleep(200)
     }
-    record('退出接口能关闭本地服务', exited)
+    // 判定「服务真的关掉了」：子进程已退出 **或** 端口不再响应，二者之一即可。
+    // 只看 exitCode 在慢机器上偏脆（universal 二进制约 230 MB，首次运行还要校验签名）；
+    // 而「端口不再响应」才是用户真正关心的结果。
+    const stopped = exited || (await healthGone(port, 12_000))
+    record('退出接口能关闭本地服务', stopped, exited ? '进程已退出' : stopped ? '端口已停止响应' : '服务仍在响应')
   } catch (error) {
-    // 自检失败时把发行版自己的日志带出来 —— 在 Mac 上没法逐步调试，这段输出就是唯一的线索
-    try {
-      const candidateLogs = [
-        path.join(target, 'smoke-data', 'logs', 'app.log'),
-        path.join(target, 'logs', 'app.log'),
-      ]
-      for (const candidate of candidateLogs) {
-        if (fs.existsSync(candidate)) {
-          log(`   [诊断] ${candidate} 末尾 25 行：`)
-          for (const line of fs.readFileSync(candidate, 'utf8').trim().split('\n').slice(-25)) {
+    thrownError = error
+    throw error
+  } finally {
+    // 诊断信息必须在删除临时副本**之前**打印；而且不只是异常时要打，
+    // 「某一项断言没过」时也要打 —— 否则日志末尾只剩「自检未通过」，看不出原因。
+    const failedChecks = checks.filter((item) => !item.ok)
+    if (failedChecks.length > 0 || thrownError) {
+      try {
+        log('')
+        log(`   --- 自检诊断：共 ${checks.length} 项，失败 ${failedChecks.length} 项 ---`)
+        for (const item of failedChecks) log(`   ✗ ${item.name}${item.detail ? `（${item.detail}）` : ''}`)
+        if (thrownError) log(`   异常：${thrownError.message ?? thrownError}`)
+        const logCandidates = [
+          path.join(target, 'smoke-data', 'logs', 'app.log'),
+          path.join(target, 'smoke-data-launchservices', 'logs', 'app.log'),
+          path.join(target, 'logs', 'app.log'),
+        ]
+        for (const candidate of logCandidates) {
+          if (!fs.existsSync(candidate)) continue
+          log(`   [app.log] ${candidate} 末尾 40 行：`)
+          for (const line of fs.readFileSync(candidate, 'utf8').trim().split('\n').slice(-40)) {
             log(`      ${line}`)
           }
         }
+      } catch {
+        /* 诊断信息拿不到就算了，不要掩盖原始错误 */
       }
-    } catch {
-      /* 诊断信息拿不到就算了，不要掩盖原始错误 */
     }
-    throw error
-  } finally {
+
     try {
       child?.kill()
     } catch {

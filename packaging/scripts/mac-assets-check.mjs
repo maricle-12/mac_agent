@@ -20,7 +20,17 @@ import { fileURLToPath } from 'node:url'
 
 import { generateMacIconAssets } from './icon.mjs'
 import { buildPlist, parsePlistTopLevel } from './plist.mjs'
-import { readMachO, hasEnabledSeaFuse, archFamily, sameArch, ARCH_FAMILIES, SEA_SEGMENT_NAME, SEA_RESOURCE_NAME } from './macho.mjs'
+import {
+  readMachO,
+  hasEnabledSeaFuse,
+  archFamily,
+  sameArch,
+  detectMachO,
+  auditMachOFiles,
+  ARCH_FAMILIES,
+  SEA_SEGMENT_NAME,
+  SEA_RESOURCE_NAME,
+} from './macho.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const packagingDir = path.resolve(__dirname, '..')
@@ -221,6 +231,25 @@ function makeThinMachO({ cputype, includeSeaSection = true, fuseEnabled = true }
 
 // ---------------------------------------------------------------- C2. Mach-O 解析
 
+/** 合成一个 universal（fat）Mach-O：把若干 thin 切片拼起来（fat 头 + 架构表 + 各切片） */
+function makeFatMachO(sliceList) {
+  const header = Buffer.alloc(8)
+  header.writeUInt32BE(0xcafebabe, 0)
+  header.writeUInt32BE(sliceList.length, 4)
+  const entries = []
+  let offset = 8 + sliceList.length * 20
+  for (const { cputype, data } of sliceList) {
+    const entry = Buffer.alloc(20)
+    entry.writeInt32BE(cputype, 0)
+    entry.writeUInt32BE(offset, 8)
+    entry.writeUInt32BE(data.length, 12)
+    entry.writeUInt32BE(14, 16)
+    entries.push(entry)
+    offset += data.length
+  }
+  return Buffer.concat([header, ...entries, ...sliceList.map((slice) => slice.data)])
+}
+
 {
   const arm64Path = path.join(tempRoot, 'thin-arm64.bin')
   fs.writeFileSync(arm64Path, makeThinMachO({ cputype: 0x0100000c }))
@@ -246,21 +275,14 @@ function makeThinMachO({ cputype, includeSeaSection = true, fuseEnabled = true }
   // 合成 universal：fat 头 + 两个切片
   const sliceA = makeThinMachO({ cputype: 0x0100000c })
   const sliceB = makeThinMachO({ cputype: 0x01000007 })
-  const fatHeader = Buffer.alloc(8)
-  fatHeader.writeUInt32BE(0xcafebabe, 0)
-  fatHeader.writeUInt32BE(2, 4)
-  const archA = Buffer.alloc(20)
-  archA.writeInt32BE(0x0100000c, 0)
-  archA.writeUInt32BE(48, 8)
-  archA.writeUInt32BE(sliceA.length, 12)
-  archA.writeUInt32BE(14, 16)
-  const archB = Buffer.alloc(20)
-  archB.writeInt32BE(0x01000007, 0)
-  archB.writeUInt32BE(48 + sliceA.length, 8)
-  archB.writeUInt32BE(sliceB.length, 12)
-  archB.writeUInt32BE(14, 16)
   const fatPath = path.join(tempRoot, 'universal.bin')
-  fs.writeFileSync(fatPath, Buffer.concat([fatHeader, archA, archB, sliceA, sliceB]))
+  fs.writeFileSync(
+    fatPath,
+    makeFatMachO([
+      { cputype: 0x0100000c, data: sliceA },
+      { cputype: 0x01000007, data: sliceB },
+    ]),
+  )
 
   const fat = readMachO(fatPath)
   check(
@@ -276,6 +298,32 @@ function makeThinMachO({ cputype, includeSeaSection = true, fuseEnabled = true }
   )
   check('universal：两个切片都被判定为已注入 SEA', fat.seaBlobInjected)
   check('universal：fuse 已翻开', fat.fuseEnabled)
+
+  // ---------------------------------------------------------------- C3. 全包 Mach-O 扫描
+  // 用于回答「到底哪个文件不是 universal」—— build-mac.mjs 的失败诊断与静态断言都依赖它。
+  const scanDir = path.join(tempRoot, 'scan')
+  fs.mkdirSync(path.join(scanDir, 'nested'), { recursive: true })
+  fs.writeFileSync(path.join(scanDir, 'universal-bin'), fs.readFileSync(fatPath))
+  fs.writeFileSync(path.join(scanDir, 'arm64-only'), sliceA)
+  fs.writeFileSync(path.join(scanDir, 'index.html'), '<html><body>not a mach-o</body></html>')
+  fs.writeFileSync(path.join(scanDir, 'nested', 'app.js'), 'console.log(1)\n')
+
+  check('detectMachO：认得出 Mach-O 文件', Boolean(detectMachO(path.join(scanDir, 'universal-bin'))?.macho))
+  check('detectMachO：普通文本文件返回 null（不会被误判）', detectMachO(path.join(scanDir, 'index.html')) === null)
+  check('detectMachO：嵌套目录里的 js 也不会被误判', detectMachO(path.join(scanDir, 'nested', 'app.js')) === null)
+
+  const audit = auditMachOFiles(scanDir, {})
+  check('auditMachOFiles：只统计 Mach-O（2 个），文本文件不计入', audit.machoCount === 2, `machoCount=${audit.machoCount}`)
+  check('auditMachOFiles：文件总数统计正确（含非 Mach-O）', audit.fileCount === 4, `fileCount=${audit.fileCount}`)
+  const uniEntry = audit.entries.find((entry) => entry.relative === 'universal-bin')
+  const armEntry = audit.entries.find((entry) => entry.relative === 'arm64-only')
+  check('auditMachOFiles：双架构文件判定 universal = true', uniEntry?.universal === true)
+  check(
+    'auditMachOFiles：能指出「只含 arm64」的文件（这正是「漏合并」的样子）',
+    armEntry?.universal === false && armEntry?.macho?.archFamilies.join('+') === 'arm64',
+    armEntry?.macho?.archFamilies.join('+'),
+  )
+  check('auditMachOFiles：没有解析问题时 problems 为空', audit.problems.length === 0, audit.problems.join('; '))
 }
 
 // Windows EXE 也能用同一套 fuse 判定（跨格式复用，顺带验证判定逻辑本身）。

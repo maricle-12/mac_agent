@@ -40,7 +40,7 @@ import { inject } from 'postject'
 
 import { generateMacIconAssets } from './icon.mjs'
 import { buildPlist, parsePlistTopLevel } from './plist.mjs'
-import { readMachO, hasEnabledSeaFuse, sameArch, archFamily, ARCH_FAMILIES, SEA_SEGMENT_NAME, SEA_RESOURCE_NAME } from './macho.mjs'
+import { readMachO, hasEnabledSeaFuse, sameArch, archFamily, ARCH_FAMILIES, auditMachOFiles, SEA_SEGMENT_NAME, SEA_RESOURCE_NAME } from './macho.mjs'
 import { createDmg, verifyDmg } from './dmg.mjs'
 import { smokeTest } from './smoke-test.mjs'
 import {
@@ -320,6 +320,52 @@ function signAppBundle(appPath) {
   if (result.status !== 0) fail(`应用包签名失败：${(result.stderr || result.stdout || '').trim()}`)
 }
 
+// ---------------------------------------------------------------- Mach-O / universal 诊断
+
+/**
+ * 打印应用包里**每一个** Mach-O 文件的架构，并给出 `lipo -info` 原文。
+ *
+ * 为什么要扫全包而不是只看主可执行文件：要求是「生成真正 universal 的 .app」，
+ * 包里原则上任何 Mach-O 都得是双架构，只看一个文件无法回答
+ * 「到底哪个文件不是 universal」。同时把 Contents/MacOS 与 Contents/Resources 列出来，
+ * 让日志自己说明包里都有什么。
+ */
+function reportMachOFiles(appPath, heading, requiredArches) {
+  const required = requiredArches ?? ['arm64', 'x64']
+  note(heading)
+  const contents = path.join(appPath, 'Contents')
+  for (const sub of ['MacOS', 'Resources']) {
+    const dir = path.join(contents, sub)
+    if (!fs.existsSync(dir)) {
+      note(`   Contents/${sub}/ 不存在`)
+      continue
+    }
+    const all = fs.readdirSync(dir)
+    note(`   Contents/${sub}/ 下有 ${all.length} 项：${all.slice(0, 20).join(', ')}${all.length > 20 ? ' …' : ''}`)
+  }
+
+  const audit = auditMachOFiles(appPath, { lipoPath: UNIX_BIN.lipo })
+  note(`   扫描 ${audit.fileCount} 个文件，其中 Mach-O ${audit.machoCount} 个（要求架构：${required.join(' + ')}）`)
+  for (const entry of audit.entries) {
+    const families = entry.macho ? entry.macho.archFamilies : []
+    const ok = required.every((arch) => families.includes(arch))
+    const raw = entry.macho ? entry.macho.arches.join(' + ') : '(解析失败)'
+    note(`   ${ok ? '✓' : '✗'} ${entry.relative}`)
+    note(
+      `        实际原始架构名 ${raw} ／ 架构族 ${families.join(' + ') || '-'}${entry.universal ? ' ／ 双架构' : ''}`,
+    )
+    if (entry.lipoInfo) note(`        lipo -info: ${entry.lipoInfo}`)
+    if (entry.error) note(`        错误：${entry.error}`)
+  }
+  for (const problem of audit.problems) note(`   ! ${problem}`)
+
+  const mismatched = audit.entries
+    .filter((entry) => !required.every((arch) => (entry.macho ? entry.macho.archFamilies : []).includes(arch)))
+    .map((entry) => entry.relative)
+  if (mismatched.length > 0) note(`   ! 架构不满足 ${required.join(' + ')} 的文件：${mismatched.join('、')}`)
+  return { audit, mismatched }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 async function buildArch({ arch, blobPath }) {
@@ -474,6 +520,9 @@ async function main() {
             '6/10',
             `已合成通用二进制（lipo）：${macho.arches.join(' + ')}（= ${macho.archFamilies.join(' + ')}）· ${humanSize(fs.statSync(universalPath).size)}`,
           )
+          // 直接打出 lipo 自己的判定，避免只依赖我们自己的解析结论
+          const lipoInfo = spawnSync(UNIX_BIN.lipo, ['-info', universalPath], { encoding: 'utf8' })
+          note(`lipo -info: ${`${lipoInfo.stdout ?? ''}${lipoInfo.stderr ?? ''}`.trim().split('\n').filter(Boolean).pop() ?? '(无输出)'}`)
         } else {
           note(`通用二进制签名失败，降级为分架构打包：${(signed.stderr || '').trim().split('\n')[0]}`)
         }
@@ -521,6 +570,8 @@ async function main() {
       readmeText,
     })
     signAppBundle(appPath)
+    // 组装完立刻核对「包里每个 Mach-O 的架构是否满足目标」，而不是等到自检失败才发现
+    reportMachOFiles(appPath, `${target.label}：应用包 Mach-O 架构核对`, target.arches)
 
     // 「拖入应用程序」的落点：DMG 卷里必须有 /Applications 的符号链接
     fs.symlinkSync('/Applications', path.join(staging, 'Applications'))
@@ -580,6 +631,20 @@ async function main() {
     checks.push([`[${tag}] Mach-O 架构 = ${target.arches.join(' + ')}`, archOk, macho.arches.join(' + ')])
     checks.push([`[${tag}] SEA blob 已注入 NODE_SEA/__NODE_SEA_BLOB`, macho.seaBlobInjected])
     checks.push([`[${tag}] SEA fuse 已翻开（注入真的生效）`, hasEnabledSeaFuse(exePath)])
+
+    // 「真正 universal」的完整要求：包里**每一个** Mach-O 都必须满足目标架构集合。
+    // 只看主可执行文件不够 —— 谁也不能保证将来不会往包里加 dylib / helper。
+    const machoAudit = auditMachOFiles(target.appPath, { lipoPath: UNIX_BIN.lipo })
+    const machoMismatch = machoAudit.entries
+      .filter((entry) => !target.arches.every((arch) => (entry.macho ? entry.macho.archFamilies : []).includes(arch)))
+      .map((entry) => entry.relative)
+    checks.push([
+      `[${tag}] 应用包内全部 Mach-O 都含 ${target.arches.join(' + ')}`,
+      machoAudit.machoCount > 0 && machoMismatch.length === 0 && machoAudit.problems.length === 0,
+      machoMismatch.length > 0
+        ? `不满足的文件：${machoMismatch.join('、')}`
+        : machoAudit.problems.join('; ') || `共 ${machoAudit.machoCount} 个 Mach-O`,
+    ])
     // 只查「本项目自己的绝对路径」有没有漏进二进制。
     // 不用泛化的 /Users/xxx：主程序里内嵌的是 Node 官方运行时，其中可能带上游 CI 的路径，
     // 那不属于本项目泄露（会在下面作为提示信息单独打印）。
@@ -663,7 +728,20 @@ async function main() {
       log: (message) => console.log(message),
     })
     portCursor += 2
-    if (!smoke.ok) fail(`${target.key} 的发行包自检未通过`)
+    if (!smoke.ok) {
+      // 失败时把「哪几项没过」写成最终的失败原因，并补一份 Mach-O 架构诊断 ——
+      // 否则日志末尾只剩一句「自检未通过」，根本看不出是哪一项、也看不出跟架构有没有关系。
+      const failedChecks = smoke.checks.filter((item) => !item.ok)
+      console.error('\n--- 发行包自检未通过的项目 ---')
+      for (const item of failedChecks) {
+        console.error(`   ✗ ${item.name}${item.detail ? `（${item.detail}）` : ''}`)
+      }
+      reportMachOFiles(target.appPath, `${target.key}：失败后的 Mach-O 架构诊断`, target.arches)
+      fail(
+        `${target.key} 的发行包自检未通过：` +
+          failedChecks.map((item) => `${item.name}${item.detail ? `（${item.detail}）` : ''}`).join('；'),
+      )
+    }
   }
 
   // ---------------------------------------------------------------- 10. DMG

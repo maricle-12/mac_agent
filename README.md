@@ -199,8 +199,8 @@ npm run dev
 | `npm run check:ui` | 无头浏览器 UI 自动化检查（需先启动 `npm run dev` 或 `npm run preview`） |
 | `npm run check:sse` | SSE 解析器单元验证（含逐字节切分等极端情况，无需网络） |
 | `npm run check:stream` | **真实流式链路验证**（需 `DEEPSEEK_API_KEY`，测量首字节与分块到达时间） |
-| `npm run check:paths` | **跨平台路径自检**（50 项，含把 macOS / Linux 的目录规则在本机算一遍并断言、构建期路径与架构名不变量） |
-| `npm run check:mac-assets` | **macOS 打包资源自检**（37 项：ICNS、Info.plist、Mach-O 解析器与架构名映射，可在任意平台跑） |
+| `npm run check:paths` | **跨平台路径自检**（54 项，含把 macOS / Linux 的目录规则在本机算一遍并断言、构建期路径与架构名不变量） |
+| `npm run check:mac-assets` | **macOS 打包资源自检**（45 项：ICNS、Info.plist、Mach-O 解析与全包架构扫描，可在任意平台跑） |
 | `npm run check:mac-build` | **macOS 构建线前半段预检**（Worker 打包 → 启动器打包 → 图标 → SEA blob；可在任意平台跑） |
 | `npm run build:win` | 构建 Windows 免安装版（`release/...zip`；等价于双击 `build_release.bat`） |
 | `npm run build:mac` | 构建 macOS 版 `.app` + `.dmg`（**只能在 macOS 上运行**；等价于双击 `build_release_mac.command`） |
