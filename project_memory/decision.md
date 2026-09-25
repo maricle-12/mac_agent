@@ -655,3 +655,26 @@ Impact: **`worker/` 目录不能删** —— 它不是「只有 Cloudflare 才�
 本地服务用的就是同一份 `worker/src/index.ts`（构建时由 esbuild 打包进可执行文件），
 校验 / CORS / SSRF 白名单 / 流式透传逻辑全在里面。
 以后新增文档时，默认把**本地免安装应用**当作唯一交付路径；提到云端方案时必须标明「可选」。
+
+## Worker 产物位置是构建期的唯一固定约定，且必须能被静态断言
+
+Decision: Worker 的打包产物**只能**落在 `<packaging>/build/worker.cjs`，由 `lib/common.mjs` 的
+`WORKER_BUNDLE_RELPATH` / `workerBundlePath()` 单点声明；两个构建脚本都必须通过
+`ensureWorkerBundle()` 生成它（禁止自己 `bundleWorker()` 到别的目录）。
+`ensureWorkerBundle` 在产物缺失时自动补生成，失败时明确输出 `worker build failed`；
+`bundleLauncher()` 内置前置检查，保证「打包启动器时 Worker 产物一定就位」。
+`paths-check.mjs` 的 D 节用 9 条断言把这三条固化下来。
+
+Reason: macOS 构建在 CI 上真实失败过：
+`local-server.cjs` 里 `require('../build/worker.cjs')` 只认 `packaging/build/worker.cjs`，
+而 `build-mac.mjs` 把产物写进了 `packaging/build-mac/worker.cjs`；esbuild 打包启动器时静态解析该 require，
+于是报 `Could not resolve "../build/worker.cjs"`。Windows 构建「刚好」也写 `packaging/build/`，所以只有 macOS 会挂。
+更糟的是这个错误**在开发机上不可能被发现**：Windows 路径碰巧一致、本机又早有历史产物残留，
+而 `build-mac.mjs` 的平台守卫让整条 macOS 构建线在非 macOS 上根本跑不到。
+
+Impact: ① 以后任何「构建期产物放在哪」的约定，都要写成一处常量 + 一条静态断言，
+不允许靠「两个脚本各写一遍、碰巧一致」；② 断言必须**显式声明生成产物**，
+不能写成「文件存在就算过」—— 那样在有残留产物的机器上会假装通过；
+③ 平台守卫会掩盖整条平台专属流程，因此**每个平台专属构建线都要提供「跑前半段」的预检入口**
+（macOS 侧即 `npm run check:mac-build` = `build-mac.mjs --preflight`），
+让与平台无关的步骤在任何机器上都能验证。

@@ -93,11 +93,21 @@ npm run build:mac:x64
 
 # 国内镜像下载 Node 运行时
 npm run build:mac:cn
+
+# 只验证「打包前半段」：Worker 打包 → 启动器打包 → 图标 → SEA blob
+# 这一步全部与操作系统无关，可以在 Windows / Linux 上先跑，提前发现路径/依赖类错误
+npm run check:mac-build
 ```
 
 或者直接**双击** `build_release_mac.command`（与 Windows 的 `build_release.bat` 对称）。
 
 脚本会依次完成 10 个步骤，并在末尾打印交付物路径。任一静态断言或发行包自检失败都会以非零退出码结束。
+
+> **`npm run check:mac-build` 为什么存在**：`build:mac` 在非 macOS 上会被平台守卫整体拦住，
+> 于是「打包前半段」里与平台无关的错误（例如某个产物写错目录）在开发机上永远跑不到，
+> 只能等 GitHub Actions 才暴露 —— 本项目就真的这样漏过一次（见 §8 的
+> `Could not resolve "../build/worker.cjs"`）。
+> 所以现在把前半段单独做成一个可随时运行的预检。
 
 ### 产物
 
@@ -247,6 +257,8 @@ xattr -dr com.apple.quarantine /Applications/AI教育智能体.app
 | 用户在 Intel Mac 上打不开 | 确认给的是 `arm64` 还是 `x64`/`universal`；`arm64` 版在 Intel 机器上无法运行（反之 Rosetta 可运行 x64）。 |
 | 打开后浏览器没反应 | 看 `~/Library/Application Support/AI教育智能体/logs/app.log`；常见原因是默认浏览器注册异常（脚本有 Safari 兜底）。 |
 | 端口被占用 | 启动器会自动顺延（默认 8765 起）。也可用 `--port=xxxx` 指定（打开终端属于排查手段，不是用户必需步骤）。 |
+| `Could not resolve "../build/worker.cjs"` | **已修复，不应再出现。** 根因是 macOS 构建把 Worker 产物写到了 `packaging/build-mac/worker.cjs`，而 `packaging/src/local-server.cjs` 里那句 `require('../build/worker.cjs')` 只认 `packaging/build/worker.cjs`（Windows 构建「刚好」也写 `packaging/build/`，所以只有 macOS 会挂）。现在两个平台都必须通过 `lib/common.mjs` 的 `ensureWorkerBundle()` 生成产物，位置由 `WORKER_BUNDLE_RELPATH` 统一声明，并且 `npm run check:paths` 会断言「local-server 要求的路径 == 构建脚本写入的路径」。若仍见到此错误，先跑 `npm run check:paths` 与 `npm run check:mac-build`。 |
+| 构建日志里只有 `worker build failed` | Worker 打包步骤真的失败了（最常见的是 `worker/src/index.ts` 被改名/删除，或 esbuild 依赖没装上）。这一行**后面会紧跟具体原因**；先确认 `packaging/node_modules` 已安装（`cd packaging && npm ci`），再确认 worker 源码存在。 |
 
 ### GitHub Actions 上失败时
 
@@ -260,15 +272,18 @@ xattr -dr com.apple.quarantine /Applications/AI教育智能体.app
 | `Build macOS .app and .dmg` | 见下面四类 | 看该步骤输出 + `Diagnostics on failure` 打印的 `app.log` |
 | `Verify build output` | 构建没产出 dmg | 实际是上一步失败了，看上面的日志 |
 
-`Build macOS .app and .dmg` 里最常见的四类问题：
+`Build macOS .app and .dmg` 里最常见的五类问题：
 
-1. **Node SEA 兼容性**：报 `SEA blob 生成失败` 或 `fuse 没有翻开`。
+1. **Worker 产物路径**：`Could not resolve "../build/worker.cjs"`。
+   已在 v1.0.1 修复（两个平台统一走 `ensureWorkerBundle()`，产物固定在 `packaging/build/worker.cjs`）；
+   若再遇到，跑 `npm run check:paths`（会直接断言这个不变量）与 `npm run check:mac-build`。
+2. **Node SEA 兼容性**：报 `SEA blob 生成失败` 或 `fuse 没有翻开`。
    用到的 `node` 与下载的 darwin 二进制版本必须一致（脚本用 `process.versions.node` 保证），
    且 `useSnapshot` / `useCodeCache` 必须为 false（跨平台注入的硬要求）。
-2. **codesign**：报 `ad-hoc 签名失败` / `签名校验失败`。
+3. **codesign**：报 `ad-hoc 签名失败` / `签名校验失败`。
    构建脚本会先 `codesign --remove-signature` 再注入再重签；若报错请把 `codesign` 的 stderr 一起发出来。
-3. **hdiutil**：报 `hdiutil create 失败`。多为磁盘空间或卷名冲突；重跑通常可解决。
-4. **lipo**：合成通用包失败时脚本会**自动降级**为分别输出 arm64 / x64 两个 DMG（日志里会写明），
+4. **hdiutil**：报 `hdiutil create 失败`。多为磁盘空间或卷名冲突；重跑通常可解决。
+5. **lipo**：合成通用包失败时脚本会**自动降级**为分别输出 arm64 / x64 两个 DMG（日志里会写明），
    这不算失败；只有连分架构也失败才会中断。
 
 `Show runner environment` 步骤会打印 `uname -m`、`node -v`、`launchctl managername`、

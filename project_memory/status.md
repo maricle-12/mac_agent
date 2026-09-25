@@ -1,15 +1,16 @@
 # 当前状态
 
-## macOS 云端构建（GitHub Actions，已配置；等待首次真实运行）
+## macOS 云端构建（GitHub Actions）
 
-仓库 `maricle-12/mac_agent`（私有）里新增 `.github/workflows/build-mac.yml`：
+仓库 `maricle-12/mac_agent`（**已转为公开**）里配置了 `.github/workflows/build-mac.yml`：
 用 GitHub 提供的 **macOS Runner** 完成原本必须在 Mac 上做的最后几步，
 从而**不需要本地 Mac 电脑**。
 
 ```
 git push  →  macos-latest runner：checkout → setup-node 22 → npm ci(根 + packaging)
           → check:paths / check:mac-assets（早失败）
-          → npm run build:mac（SEA 注入 → ad-hoc 签名 → .app → 自检 → dmg → 挂载验收）
+          → npm run build:mac（Worker 打包 → 启动器打包 → SEA 注入 → ad-hoc 签名
+                              → .app → 自检 → dmg → 挂载验收 → .app.zip）
           → Artifacts: AI教育智能体-macOS-build（.dmg + .app.zip）
 ```
 
@@ -23,40 +24,60 @@ git push  →  macos-latest runner：checkout → setup-node 22 → npm ci(根 +
 | 内容 | `AI教育智能体_v1.0.1_macOS_universal.dmg`、`AI教育智能体_v1.0.1_macOS_universal.app.zip` |
 | 签名 | 只用 `codesign --force --sign -`（ad-hoc）；**不接 Apple 账号、不公证** |
 | 架构 | 默认 universal（arm64 复用 runner 的 Node，x64 从 nodejs.org 下载并校验 SHA-256，再 lipo 合成） |
+| 分钟数 | 仓库公开后标准 runner **免费不限量**（私有仓库时 macOS 按 10 倍计费，现已无此顾虑） |
 
-### 本轮为「能在 CI 上跑通」做的必要改动
+### ⚠️ 第一次真实运行的失败与修复（Worker 产物路径不一致）
 
-1. **`mac-assets-check.mjs`**：原来「Windows EXE 存在才能交叉验证 fuse」在 macOS runner 上必然失败，
-   会直接把整个 macOS 构建卡死。已改为**不存在时明确跳过并打印原因**（跨平台自检必须能在无 Windows 产物的机器上通过）。
-2. **`smoke-test.mjs`**：新增 `hasGuiSession()`（查 `launchctl managername`）。
-   `/usr/bin/open`（LaunchServices）需要 Aqua 图形会话；没有时**明确跳过「双击启动」这一项并说明原因**，
-   而不是误报成构建失败。其余验证（真启动二进制 + 完整接口矩阵 + 签名复验）在 CI 上照常执行。
-3. **`build-mac.mjs`**：新增产出 `.app.zip`（用 `/usr/bin/ditto -c -k --keepParent`，而不是 `zip` 命令 ——
-   只有 ditto 能保留 `.app` 的符号链接/权限/扩展属性），并**解压回临时目录复验签名**，
-   证明「用户解压后就能启动」。这样 `release/*.zip` 也真的有东西可上传。
-4. **仓库状态**：`maricle-12/mac_agent` 原本**只有一个草稿 workflow、没有任何项目代码**，
-   已把完整项目推到 `main`（见下面的「已实测 / 未实测」）。
+**失败点**：`[3/10]` 打包 Worker 之后，`[4/10]` 打包启动器时报
 
-### 本轮已实测（真实执行，非推断）
+```
+ERROR: Could not resolve "../build/worker.cjs"
+   位置：packaging/src/local-server.cjs:29
+```
 
-- 工作流本地校验 **45/45 通过**：YAML 可解析、结构与要求一致（`macos-latest`、Node 22、npm 缓存含两处 lockfile、
-  `npm ci` + `npm install` 兜底、`npm run build:mac`、artifact 名称与路径、`if: always()` 保住产物），
-  并且把 8 个 `run:` 脚本块全部抽出来做了 **`bash -n` 语法检查**（0 失败），
-  另外静态确认未使用 bash 4+ 专有语法（runner 上可能是 bash 3.2）。
-- `npm run check:paths` **33/33**、`npm run check:mac-assets` **23/23**（跳过项已改为不计失败）。
-- Windows 发行版重建后仍是 **19/19 静态断言 + 25/25 发行包自检**，体积与改造前完全一致（见下一节）。
+**根因**：`local-server.cjs` 里那句 `require('../build/worker.cjs')` 是相对 `packaging/src/` 解析的，
+**只能**指向 `packaging/build/worker.cjs`；而 `build-mac.mjs` 把 Worker 产物写到了
+`packaging/build-mac/worker.cjs`（`build-release.mjs` 恰好用 `packaging/build/`，所以只有 macOS 会挂）。
+esbuild 打包启动器时会静态解析这句 require，于是直接解析失败。
 
-### 本轮未实测（必须由 GitHub Actions 的第一次真实运行来确认）
+**为什么开发机上没发现**：
+1. Windows 构建「刚好」也写 `packaging/build/`，路径碰巧一致；
+2. 本机 `packaging/build/worker.cjs` 早就存在（历次构建留下），即使路径写错也能解析成功；
+3. `build-mac.mjs` 的平台守卫让整条 macOS 构建线在非 macOS 上**完全跑不到** —— 只能等 CI 暴露。
+
+**修复**（`packaging/scripts/lib/common.mjs` 统一约定 + 自愈 + 静态断言）：
+
+| 改动 | 作用 |
+| --- | --- |
+| 新增 `WORKER_BUNDLE_RELPATH` / `workerBundlePath()` | 把「Worker 产物唯一位置」变成一处声明，两个构建脚本共用 |
+| 新增 `ensureWorkerBundle({ force })` | 产物缺失时自动生成，输出 `worker bundle missing, generating...`；失败时明确输出 `worker build failed` 并抛错，不再让下游 esbuild 报出看不出根因的错误 |
+| `bundleLauncher()` 增加前置检查 | 打包启动器前先保证 Worker 产物就位，消除「谁先谁后」的隐藏依赖 |
+| `build-release.mjs` / `build-mac.mjs` 第 3 步 | 都改为调用 `ensureWorkerBundle({ force: true })`，产物都落在 `packaging/build/worker.cjs` |
+| `build-mac.mjs` 新增 `--preflight` | 只跑「Worker 打包 → 启动器打包 → 图标 → SEA blob」，**平台无关**，可在 Windows 上验证 macOS 构建线的前半段 |
+| `paths-check.mjs` 新增 D 节 9 条断言 | 直接固化不变量：`local-server.cjs` 要求的路径 == 构建脚本约定的路径、两个脚本都走 `ensureWorkerBundle`、`packaging/src` 的相对 require 全部可解析 |
+
+### 修复后已实测（真实执行，非推断）
+
+- **复现原始故障条件并通过**：删掉整个 `packaging/build/`（等价于 macOS runner 的干净环境）后执行
+  `npm run check:mac-build` → `[3/10]` 打印 `worker bundle missing, generating...` + `worker bundle ok（14.5 KB）`，
+  `[4/10]` **打包启动器成功**（产 94 KB launcher bundle），SEA blob 也生成成功 → 原先失败的两步现已通过。
+- **自愈路径**：单独删掉 `packaging/build/worker.cjs` 后直接调用 `bundleLauncher()` →
+  自动补生成并成功打包启动器（不再依赖调用顺序）。
+- **失败提示**：临时改名 `worker/src/index.ts` 触发失败 → 输出 `worker build failed` + 具体原因，
+  抛出的错误信息明确指向该步骤（验证后源文件已还原，无残留）。
+- `npm run check:paths` **42/42**（含 9 条新增的构建期路径不变量断言）、`npm run check:mac-assets` **23/23**。
+- `npm run build:win` **19/19 静态断言 + 25/25 发行包自检**，体积与改造前完全一致。
+
+### 仍未实测（需要下一次 GitHub Actions 运行确认）
 
 | 项目 | 说明 |
 | --- | --- |
-| 云端 macOS 构建是否一次通过 | 本机是 Windows，**无法执行** `codesign` / `hdiutil` / `lipo`，因此无法本地预跑 |
-| runner 上 `codesign` / `hdiutil` / `lipo` 的行为 | 已用 `Show runner environment` 步骤把版本与可用性打进日志，一次运行即可确认 |
+| 云端 macOS 构建能否走完 | 前半段（到 SEA blob）已在 Windows 上验证通过；后半段 `codesign` / `hdiutil` / `lipo` 仍需在 runner 上真跑 |
+| runner 上 `codesign` / `hdiutil` / `lipo` 的行为 | 已用 `Show runner environment` 步骤把版本与可用性打进日志 |
 | runner 上是否有 Aqua 图形会话 | 有则真验「双击启动」，无则跳过并打印原因（两种都不会导致构建失败） |
 
-> 说明：本次会话**没有 GitHub Token**，因此推送之后无法读取 Actions 的运行日志。
-> 若首次运行失败，请把失败步骤的名称、该步骤的完整日志、以及 `Show runner environment` 那一段发回来，
-> 按 `packaging/MACOS.md` 第 9 节的分类表定位（Node SEA / codesign / hdiutil / lipo 四类各有对应处理）。
+> 说明：本会话**没有 GitHub Token**，无法读取 Actions 日志。若再次失败，请把失败步骤名称 + 完整日志发回来；
+> 现在 `Could not resolve "../build/worker.cjs"` 这一类问题已由 `check:paths` 的不变量断言 + `check:mac-build` 预检兜住。
 
 ## macOS 本地构建（v1.0.1，代码与打包线已完成）
 

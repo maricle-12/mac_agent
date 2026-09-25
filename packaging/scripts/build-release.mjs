@@ -43,10 +43,10 @@ import {
   buildFrontend,
   buildSeaBlob,
   bundleLauncher,
-  bundleWorker,
   cleanOwnOutputs,
   dirSize,
   ensureBuildDeps,
+  ensureWorkerBundle,
   fail,
   humanSize,
   launcherVersionMatches,
@@ -101,12 +101,14 @@ async function main() {
 
   // ---------------------------------------------------------------- 3. Worker
   log('3/10', '打包现有 Worker 代码（源码不改动）')
-  await bundleWorker({ demoRoot, outfile: path.join(buildDir, 'worker.cjs') })
+  // 产物落在 packaging/build/worker.cjs —— 这是 local-server.cjs 里
+  // require('../build/worker.cjs') 解析到的位置，Windows 与 macOS 共用同一份位置约定。
+  await ensureWorkerBundle({ packagingDir, demoRoot, force: true })
 
   // ---------------------------------------------------------------- 4. 启动器
   log('4/10', '打包启动器（注入版本号）')
   const launcherBundlePath = path.join(buildDir, 'launcher.bundle.cjs')
-  await bundleLauncher({ packagingDir, outfile: launcherBundlePath, version: VERSION })
+  await bundleLauncher({ packagingDir, demoRoot, outfile: launcherBundlePath, version: VERSION })
 
   // ---------------------------------------------------------------- 5. 图标
   log('5/10', '生成产品图标（多尺寸 ICO）')

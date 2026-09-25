@@ -147,8 +147,76 @@ export async function bundleWorker({ demoRoot, outfile }) {
   })
 }
 
-/** 3. 启动器打包成单文件 CJS（注入版本号，供 paths.cjs 使用） */
-export async function bundleLauncher({ packagingDir, outfile, version }) {
+/**
+ * 构建期的**唯一固定约定**：Worker 产物必须落在 <packaging>/build/worker.cjs。
+ *
+ * 原因：`packaging/src/local-server.cjs` 里写的是
+ *     const workerModule = require('../build/worker.cjs')
+ * 这句相对路径是相对 `packaging/src/` 解析的，**只能**解析到 `packaging/build/worker.cjs`。
+ * 打包启动器时 esbuild 会把这一句静态解析掉，所以：
+ *
+ *   - Windows 与 macOS 必须把 Worker 产物写到**同一个位置**（就是这里）；
+ *   - 谁都不许自己拼一个别的目录名（例如 build-mac/worker.cjs），
+ *     否则在干净环境里 esbuild 会直接报 "Could not resolve ../build/worker.cjs"。
+ *
+ * 历史上 macOS 构建就是这么失败的：它把产物写进了 packaging/build-mac/，
+ * 而 local-server.cjs 只认 packaging/build/。Windows 构建刚好也用 packaging/build/，
+ * 所以只有 macOS 会挂 —— 属于「看起来两边都写了 Worker 打包、其实路径不一致」。
+ */
+export const WORKER_BUNDLE_RELPATH = path.join('build', 'worker.cjs')
+
+/** Worker 产物的绝对路径（Windows / macOS 共用这一个） */
+export function workerBundlePath(packagingDir) {
+  return path.join(packagingDir, WORKER_BUNDLE_RELPATH)
+}
+
+/**
+ * 保证 Worker 产物存在，且落在 local-server.cjs 要求的那个位置。
+ *
+ * @param {{ packagingDir: string, demoRoot: string, force?: boolean }} options
+ *   force=true 时总是重新生成（构建主流程用，保证产物与当前源码一致）；
+ *   force=false 时仅在缺失时补生成（作为兜底，见 bundleLauncher 的前置检查）。
+ */
+export async function ensureWorkerBundle({ packagingDir, demoRoot, force = false }) {
+  const outfile = workerBundlePath(packagingDir)
+  const exists = fs.existsSync(outfile)
+  if (exists && !force) return outfile
+
+  console.log(exists ? 'worker bundle: rebuilding...' : 'worker bundle missing, generating...')
+  console.log(`   ${path.relative(demoRoot, outfile)}  ←  worker/src/index.ts（esbuild 打包，源码不改动）`)
+
+  try {
+    fs.mkdirSync(path.dirname(outfile), { recursive: true })
+    await bundleWorker({ demoRoot, outfile })
+  } catch (error) {
+    // 明确报「worker build failed」，而不是让调用方在后续 esbuild 解析里看到
+    // "Could not resolve ../build/worker.cjs" 这种看不出根因的错误。
+    console.error('worker build failed')
+    console.error(`   原因：${error && error.message ? error.message : error}`)
+    throw new Error(`worker build failed（无法把 worker/src/index.ts 打包到 ${outfile}）`)
+  }
+
+  const size = fs.existsSync(outfile) ? fs.statSync(outfile).size : 0
+  if (size < 1024) {
+    console.error('worker build failed')
+    console.error(`   产物缺失或异常：${outfile}（${size} 字节）`)
+    throw new Error('worker build failed')
+  }
+
+  console.log(`worker bundle ok（${(size / 1024).toFixed(1)} KB）`)
+  return outfile
+}
+
+/**
+ * 3. 启动器打包成单文件 CJS（注入版本号，供 paths.cjs 使用）。
+ *
+ * 打包前先做一次前置检查：launcher.cjs → local-server.cjs 里有一句
+ * `require('../build/worker.cjs')`，esbuild 会尝试静态解析它；
+ * 如果那个文件不存在，就会抛出难以定位的 "Could not resolve" 错误。
+ * 这里就地补上，让「谁先谁后」不再是一个隐藏的隐含依赖。
+ */
+export async function bundleLauncher({ packagingDir, demoRoot, outfile, version }) {
+  await ensureWorkerBundle({ packagingDir, demoRoot, force: false })
   await esbuild.build({
     entryPoints: [path.join(packagingDir, 'src', 'launcher.cjs')],
     bundle: true,

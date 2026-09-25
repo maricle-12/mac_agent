@@ -287,6 +287,65 @@ const WIN_HOME = 'C:\\Users\\tester'
   )
 }
 
+// ---------------------------------------------------------------- D. 构建期路径不变量
+//
+// 这一节的由来：macOS 构建在 CI 上失败于
+//     Could not resolve "../build/worker.cjs"  （packaging/src/local-server.cjs:29）
+// 根因是 macOS 构建把 Worker 产物写到了 packaging/build-mac/worker.cjs，
+// 而 local-server.cjs 里那句相对 require 只认 packaging/build/worker.cjs。
+// Windows 构建「刚好」也写 packaging/build/，所以只有 macOS 会挂 ——
+// 而且 build-mac.mjs 的平台守卫让它在本机完全跑不到，只能等 CI 才暴露。
+// 下面这几条断言把那个不变量固化下来，防止同类问题再次发生。
+{
+  const localServerSource = fs.readFileSync(path.join(packagingDir, 'src', 'local-server.cjs'), 'utf8')
+  const commonSource = fs.readFileSync(path.join(packagingDir, 'scripts', 'lib', 'common.mjs'), 'utf8')
+
+  /** local-server.cjs 里 require 的那个 Worker 产物路径（相对 packaging/src/ 解析） */
+  const requiredSpec = /require\(\s*['"](\.\.[^'"]+)['"]\s*\)/.exec(localServerSource)?.[1] ?? null
+  check('local-server.cjs 里能找到 Worker 产物的相对 require', Boolean(requiredSpec), String(requiredSpec))
+
+  const requiredAbs = requiredSpec ? path.resolve(packagingDir, 'src', requiredSpec) : null
+  const declaredAbs = path.join(packagingDir, 'build', 'worker.cjs')
+  check(
+    'local-server.cjs 要求的 Worker 产物 = 构建脚本约定的唯一位置（packaging/build/worker.cjs）',
+    requiredAbs === declaredAbs,
+    `local-server 要求 ${requiredAbs}，构建脚本约定 ${declaredAbs}`,
+  )
+  check('lib/common.mjs 声明了 Worker 产物唯一位置常量', commonSource.includes('WORKER_BUNDLE_RELPATH'))
+
+  for (const script of ['build-release.mjs', 'build-mac.mjs']) {
+    const source = fs.readFileSync(path.join(packagingDir, 'scripts', script), 'utf8')
+    check(`${script} 通过共用的 ensureWorkerBundle 生成 Worker 产物`, source.includes('ensureWorkerBundle('))
+    check(
+      `${script} 不自己调用 bundleWorker（避免再一次把产物写到别的目录）`,
+      !/\bbundleWorker\s*\(/.test(source),
+    )
+  }
+
+  // build-mac.mjs 必须保留「只跑到 SEA blob」的预检模式：
+  // 否则 macOS 构建线的前半段在 Windows 开发机上永远跑不到（本次故障就是这样漏掉的）。
+  const macBuildSource = fs.readFileSync(path.join(packagingDir, 'scripts', 'build-mac.mjs'), 'utf8')
+  check('build-mac.mjs 支持 --preflight（让平台无关的前半段可在任意系统验证）', macBuildSource.includes("'--preflight'"))
+
+  // packaging/src 里所有相对 require 都要能解析：要么是真实文件，要么是「已声明的构建产物」。
+  // 后者用显式白名单，而不是「本机碰巧存在」—— 否则这条检查在有残留产物的机器上会假装通过。
+  const srcDir = path.join(packagingDir, 'src')
+  const declaredGenerated = new Set([declaredAbs])
+  const unresolved = []
+  for (const name of fs.readdirSync(srcDir).filter((f) => f.endsWith('.cjs'))) {
+    const source = fs.readFileSync(path.join(srcDir, name), 'utf8')
+    const re = /require\(\s*['"](\.[^'"]+)['"]\s*\)/g
+    let match
+    while ((match = re.exec(source)) !== null) {
+      const abs = path.resolve(srcDir, match[1])
+      if (declaredGenerated.has(abs)) continue
+      const candidates = [abs, `${abs}.cjs`, `${abs}.js`, `${abs}.json`, path.join(abs, 'index.js'), path.join(abs, 'index.cjs')]
+      if (!candidates.some((candidate) => fs.existsSync(candidate))) unresolved.push(`${name} → ${match[1]}`)
+    }
+  }
+  check('packaging/src 的相对 require 全部可解析（或指向已声明的构建产物）', unresolved.length === 0, unresolved.join('; '))
+}
+
 // ---------------------------------------------------------------- 输出
 let failed = 0
 console.log(`\n=== 跨平台路径自检（当前机器：${process.platform}） ===\n`)

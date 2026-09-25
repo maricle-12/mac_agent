@@ -16,6 +16,7 @@
     "check:stream": "node scripts/stream-check.mjs",
     "check:paths": "node packaging/scripts/paths-check.mjs",
     "check:mac-assets": "node packaging/scripts/mac-assets-check.mjs",
+    "check:mac-build": "node packaging/scripts/build-mac.mjs --preflight",
     "build:win": "node packaging/scripts/build-release.mjs",
     "build:mac": "node packaging/scripts/build-mac.mjs",
     "build:mac:arm64": "node packaging/scripts/build-mac.mjs --arch=arm64",

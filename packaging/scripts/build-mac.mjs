@@ -55,10 +55,10 @@ import {
   buildMacReadme,
   buildSeaBlob,
   bundleLauncher,
-  bundleWorker,
   cleanOwnOutputs,
   dirSize,
   ensureBuildDeps,
+  ensureWorkerBundle,
   fail,
   humanSize,
   launcherVersionMatches,
@@ -67,6 +67,7 @@ import {
   readProjectInfo,
   run,
   scanRelease,
+  workerBundlePath,
 } from './lib/common.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -98,6 +99,8 @@ const ARCH_ARG = flag('arch') ?? 'universal'
 const NODE_MIRROR = flag('node-mirror') ?? NODE_MIRROR_DEFAULT
 const LOCAL_NODE_OVERRIDE = flag('node-binary')
 const OFFLINE = process.argv.includes('--offline')
+/** 只跑到 SEA blob（平台无关部分），用于在非 macOS 上验证 macOS 构建线的前半段 */
+const PREFLIGHT_ONLY = process.argv.includes('--preflight')
 
 const UNIX_BIN = {
   codesign: '/usr/bin/codesign',
@@ -337,12 +340,21 @@ async function buildArch({ arch, blobPath }) {
 async function main() {
   console.log(`\n=== 构建 ${APP_DIR_NAME} v${VERSION}（macOS） ===\n`)
 
-  if (process.platform !== 'darwin') {
+  // --preflight：只跑到「Worker 打包 → 启动器打包 → 图标 → SEA blob」就停下。
+  // 这几步全部与操作系统无关，因此可以在 Windows / Linux 上先把 macOS 构建线的前半段验掉。
+  // 加这个开关的直接原因：本项目的 macOS 构建线在非 macOS 上会被平台守卫整体拦住，
+  // 于是「产物路径写错」这类与平台无关的错误在开发机上根本跑不到，只能等 CI 才暴露。
+  if (PREFLIGHT_ONLY) {
+    console.log('模式：--preflight（只跑到 SEA blob；SEA 注入 / codesign / hdiutil 仍是 macOS 专有）\n')
+  }
+
+  if (process.platform !== 'darwin' && !PREFLIGHT_ONLY) {
     fail(
       'macOS 发行版只能在 macOS 上构建。\n' +
         '        原因：SEA 注入后必须用 /usr/bin/codesign 重新做 ad-hoc 签名（Apple 芯片会拒绝签名失效的二进制），\n' +
         '        且 .dmg 只能由 /usr/bin/hdiutil 生成 —— 这两者都只有 macOS 自带。\n' +
-        '        请在 Mac 上执行：npm run build:mac（依赖见 packaging/MACOS.md）',
+        '        请在 Mac 上执行：npm run build:mac（依赖见 packaging/MACOS.md）\n' +
+        '        只想在别的系统上验证「打包前半段」可以用：npm run check:mac-build',
     )
   }
   if (!['universal', 'arm64', 'x64'].includes(ARCH_ARG)) {
@@ -350,10 +362,6 @@ async function main() {
   }
   if (appConfigVersion !== VERSION) {
     fail(`版本号不一致：package.json = ${VERSION}，src/config/app.ts = ${appConfigVersion}`)
-  }
-  for (const [name, bin] of Object.entries(UNIX_BIN)) {
-    if (name === 'lipo') continue // lipo 只做通用包时用，缺失时自动降级
-    if (!toolExists(bin)) fail(`缺少系统工具：${bin}（这是 macOS 自带命令，请确认系统完整性）`)
   }
   ensureBuildDeps(packagingDir)
 
@@ -372,6 +380,8 @@ async function main() {
       path.join(buildRoot, 'arm64'),
       path.join(buildRoot, 'x64'),
       path.join(buildRoot, 'universal-sea'),
+      // 旧布局遗留：以前 Worker 产物被误写到 build-mac/ 下（正确位置是 packaging/build/worker.cjs），
+      // 顺手清掉，避免让人以为它是被用到的产物。
       path.join(buildRoot, 'worker.cjs'),
       path.join(buildRoot, 'launcher.bundle.cjs'),
       path.join(buildRoot, 'sea-config.json'),
@@ -387,12 +397,14 @@ async function main() {
 
   // ---------------------------------------------------------------- 3. Worker
   log('3/10', '打包现有 Worker 代码（源码不改动）')
-  await bundleWorker({ demoRoot, outfile: path.join(buildRoot, 'worker.cjs') })
+  // 必须落在 packaging/build/worker.cjs：这是 local-server.cjs 里
+  // require('../build/worker.cjs') 解析到的位置，与 Windows 构建共用同一个约定。
+  await ensureWorkerBundle({ packagingDir, demoRoot, force: true })
 
   // ---------------------------------------------------------------- 4. 启动器
   log('4/10', '打包启动器（注入版本号）')
   const launcherBundlePath = path.join(buildRoot, 'launcher.bundle.cjs')
-  await bundleLauncher({ packagingDir, outfile: launcherBundlePath, version: VERSION })
+  await bundleLauncher({ packagingDir, demoRoot, outfile: launcherBundlePath, version: VERSION })
 
   // ---------------------------------------------------------------- 5. 图标
   log('5/10', '生成 macOS 图标（ICNS，多分辨率 PNG 载荷）')
@@ -401,6 +413,25 @@ async function main() {
 
   // ---------------------------------------------------------------- 6. SEA blob（平台无关，只做一次）
   const { blobPath } = buildSeaBlob({ demoRoot, buildDir: buildRoot, launcherBundlePath })
+
+  if (PREFLIGHT_ONLY) {
+    const kb = (f) => `${(fs.statSync(f).size / 1024).toFixed(0)} KB`
+    console.log('\n=== 预检通过（--preflight） ===')
+    console.log(`  Worker 产物   : ${path.relative(demoRoot, workerBundlePath(packagingDir))}（${kb(workerBundlePath(packagingDir))}）`)
+    console.log(`  启动器产物    : ${path.relative(demoRoot, launcherBundlePath)}（${kb(launcherBundlePath)}）`)
+    console.log(`  SEA blob      : ${path.relative(demoRoot, blobPath)}（${kb(blobPath)}）`)
+    console.log(`  macOS 图标    : ${path.relative(demoRoot, icon.icnsPath)}（${kb(icon.icnsPath)}）`)
+    console.log(`  前端静态资源  : ${path.relative(demoRoot, path.join(demoRoot, 'dist'))}`)
+    console.log('  未执行（需要 macOS）：SEA 注入 / codesign / .app 组装 / hdiutil 出 dmg / 发行包自检')
+    console.log('')
+    return
+  }
+
+  // 到这里才真正需要 macOS 专有工具（--preflight 在非 macOS 上会提前返回）
+  for (const [name, bin] of Object.entries(UNIX_BIN)) {
+    if (name === 'lipo') continue // lipo 只做通用包时用，缺失时自动降级
+    if (!toolExists(bin)) fail(`缺少系统工具：${bin}（这是 macOS 自带命令，请确认系统完整性）`)
+  }
 
   // 目标架构列表
   const requestedArches =

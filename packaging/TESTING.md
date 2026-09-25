@@ -31,10 +31,16 @@
 ### A1. 与平台无关的静态自检（Windows 上即可跑完）
 
 ```bash
-npm run check:paths        # 33 项：跨平台目录规则 + 平台分发 + 运行期源码无开发机路径
+npm run check:paths        # 40 项：跨平台目录规则 + 平台分发 + 构建期路径不变量 + 运行期源码无开发机路径
 npm run check:mac-assets   # 23 项：ICNS 容器/PNG CRC、Info.plist 往返、Mach-O 解析器（合成样本）
+npm run check:mac-build    # macOS 构建线的「打包前半段」：Worker 打包 → 启动器打包 → 图标 → SEA blob
 npm run check:sse          # 30 项：SSE 解析器（含逐字节与随机切分）
 ```
+
+`check:mac-build` 是 `build-mac.mjs --preflight`：只跑**与操作系统无关**的那几步，然后停下。
+它的存在是因为 `build:mac` 在非 macOS 上会被平台守卫整体拦住，导致前半段的错误
+（本项目真实发生过：Worker 产物被写到了别的目录，esbuild 报
+`Could not resolve "../build/worker.cjs"`）在开发机上永远跑不到、只能等 CI 暴露。
 
 `check:paths` 会把 **darwin / linux 的目录规则在 Windows 上算一遍并断言**，包括：
 
